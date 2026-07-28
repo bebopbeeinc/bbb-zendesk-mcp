@@ -38,7 +38,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "zenpy>=2.0.0",
     "pdfplumber>=0.11.0",
     "Pillow>=10.0.0",
