@@ -1,0 +1,171 @@
+name: canary
+
+# Catches upstream breakage that no repo change would ever trigger CI for.
+#
+# Issue #11 (mcp 2.0 dropping mcp.server.fastmcp) broke every new install
+# without a single commit landing here, so push-triggered CI stayed green
+# while users could not start the server at all. These jobs install the way
+# users actually install and exercise a real MCP handshake, on a schedule.
+#
+# On a pull request the same jobs run against the local checkout instead of
+# PyPI, so edits to the canary are validated without depending on a release.
+
+on:
+  schedule:
+    # 06:17 UTC daily — off the top of the hour, where Actions queues are busiest.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/canary.yml"
+      - ".github/scripts/smoke_test.py"
+
+permissions:
+  contents: read
+
+jobs:
+  published:
+    name: uvx install (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Select install target
+        id: target
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "from=." >> "$GITHUB_OUTPUT"
+          else
+            echo "from=zendesk-mcp" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Smoke test the install
+        # --refresh forces a fresh resolve; a warm cache would mask exactly the
+        # dependency drift this job exists to detect.
+        run: >
+          python .github/scripts/smoke_test.py
+          uvx --refresh --python ${{ matrix.python-version }}
+          --from ${{ steps.target.outputs.from }} zendesk-mcp
+
+  bundle:
+    name: mcpb desktop bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Stage the bundle
+        # Mirrors what release.yml packs into the .mcpb. On a schedule it pins
+        # whatever is currently on PyPI, so it reflects what desktop users get
+        # today; on a pull request it points at the checkout instead.
+        shell: python
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          import json, os, pathlib, shutil, urllib.request
+
+          if os.environ["EVENT_NAME"] == "pull_request":
+              pin = "zendesk-mcp @ " + pathlib.Path.cwd().as_uri()
+          else:
+              latest = json.load(urllib.request.urlopen(
+                  "https://pypi.org/pypi/zendesk-mcp/json"))["info"]["version"]
+              print(f"latest published version: {latest}")
+              pin = f"zendesk-mcp=={latest}"
+
+          bundle = pathlib.Path("_bundle")
+          (bundle / "src").mkdir(parents=True, exist_ok=True)
+          shutil.copy("mcpb/src/server.py", bundle / "src" / "server.py")
+
+          text = pathlib.Path("mcpb/pyproject.toml").read_text()
+          before, sep, after = text.partition('"zendesk-mcp==')
+          assert sep, "could not find the zendesk-mcp pin in mcpb/pyproject.toml"
+          text = before + '"' + pin + '"' + after.split('"', 1)[1]
+          (bundle / "pyproject.toml").write_text(text)
+          print(text)
+      - name: Smoke test the bundle entry point
+        run: >
+          python .github/scripts/smoke_test.py
+          uv run --refresh --directory _bundle src/server.py
+
+  source-latest-deps:
+    name: source vs newest deps (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install with newest resolvable dependencies
+        run: pip install --upgrade --upgrade-strategy eager -e ".[dev]"
+      - name: Show resolved dependency versions
+        run: pip list
+      - name: Run tests
+        run: pytest -q
+      - name: Smoke test the source tree
+        run: python .github/scripts/smoke_test.py zendesk-mcp
+
+  report:
+    name: Report canary failure
+    needs: [published, bundle, source-latest-deps]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the canary issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          gh label create canary --repo "$GITHUB_REPOSITORY" \
+            --color d93f0b --description "Scheduled canary detected upstream breakage" \
+            2>/dev/null || true
+
+          body=$(cat <<EOF
+          The daily canary failed. An upstream dependency most likely published a
+          breaking change — no commit in this repo is needed to trigger that.
+
+          Failed run: $RUN_URL
+
+          The \`pip list\` output in the \`source vs newest deps\` job shows the
+          resolved dependency versions; compare it against the last green run to
+          see what moved.
+          EOF
+          )
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label canary --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            echo "Commenting on existing canary issue #$existing"
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            echo "Opening a new canary issue"
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Canary failure: install is broken against current dependencies" \
+              --label canary --body "$body"
+          fi
