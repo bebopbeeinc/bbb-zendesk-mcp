@@ -6,12 +6,12 @@
     "url": "https://github.com/michaelrice/zendesk-mcp",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.1.4",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "zendesk-mcp",
-      "version": "0.1.1",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       }
