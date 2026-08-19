@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, quote, urlparse
@@ -12,6 +13,12 @@ REDIRECT_URI = "http://localhost:8787/callback"
 CALLBACK_PORT = 8787
 CALLBACK_TIMEOUT_SECONDS = 90
 
+# Zendesk allows 5 minutes to 48 hours for access tokens and 7 to 90 days for refresh
+# tokens. A long access token keeps refresh traffic low; the refresh token sets how long
+# the server can go unused before setup must be re-run.
+ACCESS_TOKEN_TTL_SECONDS = 86400       # 24 hours
+REFRESH_TOKEN_TTL_SECONDS = 7776000    # 90 days
+
 
 def _extract_code(raw: str) -> str | None:
     raw = raw.strip()
@@ -23,7 +30,19 @@ def _extract_code(raw: str) -> str | None:
     return raw
 
 
-def _exchange_code(subdomain: str, code: str, client_id: str, client_secret: str) -> str:
+def _exchange_code(
+    subdomain: str,
+    code: str,
+    client_id: str,
+    client_secret: str,
+    now: float | None = None,
+) -> dict:
+    """Exchange the authorization code for a token pair.
+
+    ``expires_in`` is requested explicitly: without it, a legacy OAuth client (created
+    before 2026-04-30) returns a non-expiring access token and no refresh token, leaving
+    nothing to renew when Zendesk later applies expiry.
+    """
     response = httpx.post(
         f"https://{subdomain}.zendesk.com/oauth/tokens",
         json={
@@ -33,11 +52,21 @@ def _exchange_code(subdomain: str, code: str, client_id: str, client_secret: str
             "client_secret": client_secret,
             "redirect_uri": REDIRECT_URI,
             "scope": "read write",
+            "expires_in": ACCESS_TOKEN_TTL_SECONDS,
+            "refresh_token_expires_in": REFRESH_TOKEN_TTL_SECONDS,
         },
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()["access_token"]
+    body = response.json()
+
+    now = now if now is not None else time.time()
+    result = {"access_token": body["access_token"]}
+    if body.get("refresh_token"):
+        result["refresh_token"] = body["refresh_token"]
+    if body.get("expires_in"):
+        result["expires_at"] = int(now + body["expires_in"])
+    return result
 
 
 def _verify_token(subdomain: str, token: str) -> dict:
@@ -134,10 +163,12 @@ def run_setup() -> None:
 
     print("\n  Exchanging code for access token...")
     try:
-        token = _exchange_code(subdomain, code_holder["code"], client_id, client_secret)
+        tokens = _exchange_code(subdomain, code_holder["code"], client_id, client_secret)
     except Exception as e:
         print(f"\n  Token exchange failed: {e}\n")
         sys.exit(1)
+
+    token = tokens["access_token"]
 
     print("  Verifying token...")
     try:
@@ -157,6 +188,12 @@ def run_setup() -> None:
         "oauth_token": token,
         "attachment_cache_dir": "~/.cache/zendesk-mcp/attachments",
     }
+    if tokens.get("refresh_token"):
+        # client_id/client_secret are required to redeem the refresh token later.
+        config_data["refresh_token"] = tokens["refresh_token"]
+        config_data["expires_at"] = tokens["expires_at"]
+        config_data["client_id"] = client_id
+        config_data["client_secret"] = client_secret
     if git_zen_input:
         try:
             config_data["git_zen_field_id"] = int(git_zen_input)
@@ -180,3 +217,10 @@ def run_setup() -> None:
         print(f"  Verified: connected as {email} (role: {role})")
 
     print(f"  Token saved to {cfg_path}\n")
+
+    if tokens.get("refresh_token"):
+        print("  Access token renews automatically; no action needed until the refresh")
+        print(f"  token expires ({REFRESH_TOKEN_TTL_SECONDS // 86400} days of no use).\n")
+    else:
+        print("  Note: this OAuth client issued a non-expiring token and no refresh token.")
+        print("     If Zendesk later applies expiry to it, re-run this setup.\n")

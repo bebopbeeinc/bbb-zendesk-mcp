@@ -41,7 +41,7 @@ def test_list_views_returns_id_and_title(mock_get_client):
     assert parsed[1] == {"id": 2, "title": "Pending"}
 
 
-@patch("zendesk_mcp.tools.views.httpx.get")
+@patch("zendesk_mcp.tools.views.auth.request")
 @patch("zendesk_mcp.tools.views.get_oauth_session")
 def test_get_view_returns_conditions(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -63,8 +63,7 @@ def test_get_view_returns_conditions(mock_oauth, mock_httpx_get):
     parsed = json.loads(result)
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/views/42.json" in args[0]
-    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert "acme.zendesk.com/api/v2/views/42.json" in args[1]
     assert parsed["id"] == 42
     assert parsed["title"] == "My View"
     assert parsed["active"] is True
@@ -98,7 +97,7 @@ def test_list_views_returns_config_error(mock_get_client):
     assert "zendesk-mcp setup" in result
 
 
-@patch("zendesk_mcp.tools.views.httpx.get")
+@patch("zendesk_mcp.tools.views.auth.request")
 @patch("zendesk_mcp.tools.views.get_oauth_session")
 def test_get_view_returns_not_found(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")

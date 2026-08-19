@@ -1,5 +1,6 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _search_tickets_data(keywords: str | None, status: str | None, limit: int) -> str:
@@ -33,10 +34,10 @@ def _search_tickets_data(keywords: str | None, status: str | None, limit: int) -
                 "description": ticket.description[:300] if ticket.description else "",
             })
         return json.dumps(tickets, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _get_ticket_data(ticket_id: int) -> str:
@@ -64,12 +65,12 @@ def _get_ticket_data(ticket_id: int) -> str:
             "description": ticket.description,
             "ticket_url": f"https://{_get_subdomain()}.zendesk.com/agent/tickets/{ticket.id}",
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _get_subdomain() -> str:

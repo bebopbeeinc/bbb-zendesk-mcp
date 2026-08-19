@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
 
 
-@patch("zendesk_mcp.tools.list_tickets.httpx.get")
+@patch("zendesk_mcp.tools.list_tickets.auth.request")
 @patch("zendesk_mcp.tools.list_tickets.get_oauth_session")
 def test_get_tickets_happy_path(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -27,12 +27,11 @@ def test_get_tickets_happy_path(mock_oauth, mock_httpx_get):
     result = _get_tickets_data(page=1, per_page=25, sort_by="created_at", sort_order="desc")
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/tickets.json" in args[0]
+    assert "acme.zendesk.com/api/v2/tickets.json" in args[1]
     assert kwargs["params"]["page"] == 1
     assert kwargs["params"]["per_page"] == 25
     assert kwargs["params"]["sort_by"] == "created_at"
     assert kwargs["params"]["sort_order"] == "desc"
-    assert kwargs["headers"]["Authorization"] == "Bearer tok"
 
     parsed = json.loads(result)
     assert parsed["page"] == 1
@@ -45,7 +44,7 @@ def test_get_tickets_happy_path(mock_oauth, mock_httpx_get):
     assert parsed["tickets"][0]["id"] == 1
 
 
-@patch("zendesk_mcp.tools.list_tickets.httpx.get")
+@patch("zendesk_mcp.tools.list_tickets.auth.request")
 @patch("zendesk_mcp.tools.list_tickets.get_oauth_session")
 def test_get_tickets_caps_per_page(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -59,7 +58,7 @@ def test_get_tickets_caps_per_page(mock_oauth, mock_httpx_get):
     assert mock_httpx_get.call_args.kwargs["params"]["per_page"] == 100
 
 
-@patch("zendesk_mcp.tools.list_tickets.httpx.get")
+@patch("zendesk_mcp.tools.list_tickets.auth.request")
 def test_get_tickets_rejects_invalid_sort_by(mock_httpx_get):
     from zendesk_mcp.tools.list_tickets import _get_tickets_data
     result = _get_tickets_data(sort_by="banana")
@@ -68,7 +67,7 @@ def test_get_tickets_rejects_invalid_sort_by(mock_httpx_get):
     mock_httpx_get.assert_not_called()
 
 
-@patch("zendesk_mcp.tools.list_tickets.httpx.get")
+@patch("zendesk_mcp.tools.list_tickets.auth.request")
 def test_get_tickets_rejects_invalid_sort_order(mock_httpx_get):
     from zendesk_mcp.tools.list_tickets import _get_tickets_data
     result = _get_tickets_data(sort_order="sideways")
@@ -76,7 +75,7 @@ def test_get_tickets_rejects_invalid_sort_order(mock_httpx_get):
     mock_httpx_get.assert_not_called()
 
 
-@patch("zendesk_mcp.tools.list_tickets.httpx.get")
+@patch("zendesk_mcp.tools.list_tickets.auth.request")
 @patch("zendesk_mcp.tools.list_tickets.get_oauth_session")
 def test_get_tickets_returns_previous_page_when_paginated(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")

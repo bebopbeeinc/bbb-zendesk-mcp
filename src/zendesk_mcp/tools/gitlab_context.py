@@ -1,5 +1,6 @@
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.config import load_config
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _get_gitlab_context(ticket_id: int) -> str:
@@ -59,12 +60,12 @@ def _get_gitlab_context(ticket_id: int) -> str:
 
 _Source: Zendesk ticket #{ticket_id} — {ticket_url}_
 """
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_gitlab_context_tools(mcp) -> None:

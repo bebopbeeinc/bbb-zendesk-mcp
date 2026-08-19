@@ -1,6 +1,7 @@
 from zenpy.lib.api_objects import Comment, Ticket
 
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _post_comment_data(ticket_id: int, body: str, public: bool) -> str:
@@ -11,12 +12,12 @@ def _post_comment_data(ticket_id: int, body: str, public: bool) -> str:
         client.tickets.update(ticket)
         label = "Public comment" if public else "Internal note"
         return f"{label} posted successfully on ticket #{ticket_id}."
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_write_comment_tools(mcp) -> None:

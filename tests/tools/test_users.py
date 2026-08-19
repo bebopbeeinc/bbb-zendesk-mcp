@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
 
 
-@patch("zendesk_mcp.tools.users.httpx.get")
+@patch("zendesk_mcp.tools.users.auth.request")
 @patch("zendesk_mcp.tools.users.get_oauth_session")
 def test_search_users_happy_path(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -21,16 +21,15 @@ def test_search_users_happy_path(mock_oauth, mock_httpx_get):
     result = _search_users_data("alice")
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/users/search.json" in args[0]
+    assert "acme.zendesk.com/api/v2/users/search.json" in args[1]
     assert kwargs["params"]["query"] == "alice"
-    assert kwargs["headers"]["Authorization"] == "Bearer tok"
 
     parsed = json.loads(result)
     assert len(parsed) == 2
     assert parsed[0] == {"id": 1, "name": "Alice Smith", "email": "alice@example.com", "role": "agent"}
 
 
-@patch("zendesk_mcp.tools.users.httpx.get")
+@patch("zendesk_mcp.tools.users.auth.request")
 @patch("zendesk_mcp.tools.users.get_oauth_session")
 def test_search_users_empty_result(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")

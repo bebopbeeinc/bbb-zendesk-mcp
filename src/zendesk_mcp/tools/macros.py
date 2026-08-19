@@ -1,7 +1,8 @@
 import json
-import httpx
 from zenpy.lib.api_objects import Ticket as ZenpyTicket, Comment
 from zendesk_mcp.client import get_client, get_oauth_session, ConfigError
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 _SKIP_TICKET_FIELDS = {"id", "url", "created_at", "updated_at"}
 
@@ -19,43 +20,43 @@ def _list_macros_data() -> str:
                 for a in (getattr(m, "actions", []) or [])
             ],
         } for m in macros], indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _preview_macro_data(macro_id: int) -> str:
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     url = f"https://{subdomain}.zendesk.com/api/v2/macros/{macro_id}/apply.json"
     try:
-        response = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        response = auth.request("GET", url, timeout=30)
         response.raise_for_status()
         return json.dumps(response.json().get("result", {}), indent=2)
     except Exception as e:
         if "404" in str(e):
             return f"Macro #{macro_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _apply_macro_data(ticket_id: int, macro_id: int) -> str:
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
 
     url = f"https://{subdomain}.zendesk.com/api/v2/tickets/{ticket_id}/macros/{macro_id}/apply.json"
     try:
-        response = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        response = auth.request("GET", url, timeout=30)
         response.raise_for_status()
         result = response.json().get("result", {})
     except Exception as e:
         if "404" in str(e):
             return f"Ticket #{ticket_id} or Macro #{macro_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
     ticket_changes = {k: v for k, v in (result.get("ticket") or {}).items() if k not in _SKIP_TICKET_FIELDS}
     comment_data = result.get("comment") or {}
@@ -91,12 +92,12 @@ def _apply_macro_data(ticket_id: int, macro_id: int) -> str:
             "applied_changes": applied_changes,
             "comment_added": comment_added,
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_macro_tools(mcp) -> None:

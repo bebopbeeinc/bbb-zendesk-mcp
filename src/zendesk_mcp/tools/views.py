@@ -1,6 +1,7 @@
 import json
-import httpx
 from zendesk_mcp.client import get_client, get_oauth_session, ConfigError
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _list_views_data() -> str:
@@ -8,20 +9,20 @@ def _list_views_data() -> str:
         client = get_client()
         views = list(client.views.active())
         return json.dumps([{"id": v.id, "title": v.title} for v in views], indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _get_view_data(view_id: int) -> str:
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     url = f"https://{subdomain}.zendesk.com/api/v2/views/{view_id}.json"
     try:
-        response = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        response = auth.request("GET", url, timeout=30)
         response.raise_for_status()
         view = response.json().get("view", {})
         return json.dumps({
@@ -34,7 +35,7 @@ def _get_view_data(view_id: int) -> str:
     except Exception as e:
         if "404" in str(e):
             return f"View #{view_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _get_view_tickets_data(view_id: int) -> str:
@@ -54,12 +55,12 @@ def _get_view_tickets_data(view_id: int) -> str:
             "updated_at": str(t.updated_at),
             "tags": list(getattr(t, "tags", []) or []),
         } for t in tickets], indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"View #{view_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_view_tools(mcp) -> None:
