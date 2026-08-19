@@ -1,16 +1,17 @@
 import json
-import httpx
 from zendesk_mcp.client import get_oauth_session, ConfigError
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _list_custom_statuses_data() -> str:
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     url = f"https://{subdomain}.zendesk.com/api/v2/custom_statuses"
     try:
-        response = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        response = auth.request("GET", url, timeout=30)
         response.raise_for_status()
         statuses = response.json().get("custom_statuses", [])
         return json.dumps([{
@@ -22,7 +23,7 @@ def _list_custom_statuses_data() -> str:
             "default": s.get("default"),
         } for s in statuses], indent=2)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_custom_status_tools(mcp) -> None:

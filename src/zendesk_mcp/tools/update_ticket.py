@@ -3,6 +3,7 @@ import json
 from zenpy.lib.api_objects import Ticket
 
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 _VALID_STATUSES = {"new", "open", "pending", "hold", "solved", "closed"}
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
@@ -48,12 +49,12 @@ def _update_ticket_data(ticket_id: int, **fields) -> str:
             "custom_status_id": getattr(refreshed, "custom_status_id", None),
             "tags": list(getattr(refreshed, "tags", []) or []),
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _set_ticket_status_data(ticket_id: int, status: str) -> str:
@@ -65,12 +66,12 @@ def _set_ticket_status_data(ticket_id: int, status: str) -> str:
         ticket.status = status
         client.tickets.update(ticket)
         return f"Ticket #{ticket_id} status set to '{status}'."
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _assign_ticket_data(ticket_id: int, assignee_email: str) -> str:
@@ -87,12 +88,12 @@ def _assign_ticket_data(ticket_id: int, assignee_email: str) -> str:
         ticket.assignee_id = user.id
         client.tickets.update(ticket)
         return f"Ticket #{ticket_id} assigned to {user.name} ({user.email})."
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_update_ticket_tools(mcp) -> None:

@@ -36,7 +36,7 @@ def test_get_client_returns_zenpy_instance(tmp_path):
 
 
 def test_get_oauth_session_returns_subdomain_and_token():
-    with patch("zendesk_mcp.client.load_config", return_value={"subdomain": "acme", "oauth_token": "tok123"}):
+    with patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme", "oauth_token": "tok123"}):
         from zendesk_mcp.client import get_oauth_session
         subdomain, token = get_oauth_session()
         assert subdomain == "acme"
@@ -44,14 +44,14 @@ def test_get_oauth_session_returns_subdomain_and_token():
 
 
 def test_get_oauth_session_raises_config_error_when_missing_token():
-    with patch("zendesk_mcp.client.load_config", return_value={"subdomain": "acme"}):
+    with patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme"}):
         from zendesk_mcp.client import get_oauth_session, ConfigError
         with pytest.raises(ConfigError, match="Run: zendesk-mcp setup"):
             get_oauth_session()
 
 
 def test_get_oauth_session_raises_config_error_when_missing_subdomain():
-    with patch("zendesk_mcp.client.load_config", return_value={"oauth_token": "tok"}):
+    with patch("zendesk_mcp.auth.load_config", return_value={"oauth_token": "tok"}):
         from zendesk_mcp.client import get_oauth_session, ConfigError
         with pytest.raises(ConfigError, match="Run: zendesk-mcp setup"):
             get_oauth_session()

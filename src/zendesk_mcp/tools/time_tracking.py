@@ -1,6 +1,7 @@
 import json
 from zenpy.lib.api_objects import Ticket
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 _FIELD_TOTAL_TIME_SPENT = 30435145651479
 _FIELD_TIME_SPENT_LAST_UPDATE = 30435145655959
@@ -34,12 +35,12 @@ def _get_time_tracking_data(ticket_id: int) -> str:
             "total_time_human": _format_duration(total),
             "time_spent_last_update_human": _format_duration(last),
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def _log_time_data(ticket_id: int, seconds: int) -> str:
@@ -63,12 +64,12 @@ def _log_time_data(ticket_id: int, seconds: int) -> str:
             "new_total_sec": new_total,
             "new_total_human": _format_duration(new_total),
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_time_tracking_tools(mcp) -> None:

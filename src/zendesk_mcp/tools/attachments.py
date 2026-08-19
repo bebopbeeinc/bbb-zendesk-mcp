@@ -4,12 +4,13 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-import httpx
 import pdfplumber
 from PIL import Image
 
 from zendesk_mcp.client import get_client, ConfigError
-from zendesk_mcp.config import load_config, attachment_cache_dir
+from zendesk_mcp.config import attachment_cache_dir
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _list_attachments_data(ticket_id: int) -> str:
@@ -27,12 +28,12 @@ def _list_attachments_data(ticket_id: int) -> str:
                     "download_url": att.content_url,
                 })
         return json.dumps(result, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 _TEXT_EXTENSIONS = {".log", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".sh", ".py", ".go", ".md"}
@@ -49,8 +50,6 @@ def _download_attachment_data(
     ticket_id: int,
     dest_dir: str | None = None,
 ) -> str:
-    cfg = load_config()
-    token = cfg.get("oauth_token", "")
     if dest_dir:
         target_dir = Path(dest_dir).expanduser()
     else:
@@ -61,11 +60,15 @@ def _download_attachment_data(
     dest = target_dir / safe_filename
 
     try:
-        response = httpx.get(attachment_url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=True)
+        response = auth.request("GET", attachment_url, follow_redirects=True)
         response.raise_for_status()
         dest.write_bytes(response.content)
     except Exception as e:
-        return json.dumps({"type": "error", "message": f"Download failed: {e}", "cached_path": str(dest)})
+        return json.dumps({
+            "type": "error",
+            "message": f"Download failed: {api_error_message(e)}",
+            "cached_path": str(dest),
+        })
 
     suffix = Path(filename).suffix.lower()
 

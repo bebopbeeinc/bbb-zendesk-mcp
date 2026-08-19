@@ -63,6 +63,27 @@ The setup opens a browser for the OAuth authorization step, then writes a token 
 
 If you have no browser, the URL is printed to the terminal — open it on any device, click **Allow**, and paste the resulting redirect URL back into the prompt.
 
+### Token expiry and refresh
+
+Zendesk access tokens expire. OAuth clients created on or after 2026-04-30 get a
+30-minute default lifetime; older clients issue non-expiring tokens unless an expiry is
+requested. Setup requests a 24-hour access token and a 90-day refresh token so the
+behaviour is the same either way, and the server renews the access token automatically —
+before it expires, and again if Zendesk rejects a token mid-request.
+
+To make that possible, the config file also stores `refresh_token`, `expires_at`,
+`client_id`, and `client_secret` alongside the access token. Keep the file at mode `0600`;
+it is the same trust level as the access token itself. If your OAuth client returns no
+refresh token, setup says so and the token is used as-is.
+
+Re-run `.venv/bin/python -m zendesk_mcp setup` when:
+
+- the refresh token expires (90 days with no use), or
+- you revoke the OAuth grant in Zendesk.
+
+In either case the tools return `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
+rather than failing opaquely.
+
 ## Register with Claude Code
 
 Register the MCP server using the venv's Python by absolute path. Claude Code launches the server in a fresh shell that does **not** inherit your activated venv, so the absolute path is required — pointing at a bare `python` here will fail to import `zendesk_mcp`.
