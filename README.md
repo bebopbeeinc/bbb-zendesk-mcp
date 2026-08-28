@@ -21,7 +21,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 - Python 3.10 or newer
 - A Zendesk OAuth client. A Zendesk admin can create one at:
   `https://<your-subdomain>.zendesk.com/admin/apps-integrations/apis/zendesk-api/oauth_clients`
-  Set the redirect URL to `http://localhost:8787/callback` and request scopes `read write`.
+  Use a **Confidential** client, set the redirect URL to
+  `http://localhost:8787/callback`, and allow the `read write` scopes.
 
 ## Install
 
@@ -72,9 +73,10 @@ behaviour is the same either way, and the server renews the access token automat
 before it expires, and again if Zendesk rejects a token mid-request.
 
 To make that possible, the config file also stores `refresh_token`, `expires_at`,
-`client_id`, and `client_secret` alongside the access token. Keep the file at mode `0600`;
-it is the same trust level as the access token itself. If your OAuth client returns no
-refresh token, setup says so and the token is used as-is.
+`refresh_token_expires_at`, `client_id`, and `client_secret` alongside the access token.
+Credential rotation is serialized across MCP processes and persisted atomically. Keep
+the file at mode `0600`; it is the same trust level as the access token itself. If your
+OAuth client returns no refresh token, setup says so and the token is used as-is.
 
 Re-run `.venv/bin/python -m zendesk_mcp setup` when:
 
@@ -240,4 +242,3 @@ Tests run on Python 3.10, 3.11, and 3.12 in CI (see `.github/workflows/test.yml`
 [Apache-2.0](LICENSE)
 
 <!-- mcp-name: io.github.michaelrice/zendesk-mcp -->
-

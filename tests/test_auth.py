@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import httpx
@@ -37,6 +39,32 @@ def token_response(access="new-tok", refresh="new-refresh", expires_in=86400):
         json=body,
         request=httpx.Request("POST", "https://acme.zendesk.com/oauth/tokens"),
     )
+
+
+# --- origin validation ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "subdomain",
+    [
+        "",
+        "-acme",
+        "acme-",
+        "acme.example",
+        "attacker.example/path",
+        "acme:443",
+        "acme@evil",
+        "a" * 64,
+    ],
+)
+def test_validate_zendesk_subdomain_rejects_non_dns_label(subdomain):
+    with pytest.raises(auth.InvalidZendeskSubdomainError):
+        auth.validate_zendesk_subdomain(subdomain)
+
+
+@pytest.mark.parametrize("subdomain", ["acme", "ACME-2", " bEbopBeeHelp "])
+def test_validate_zendesk_subdomain_returns_canonical_label(subdomain):
+    assert auth.validate_zendesk_subdomain(subdomain) == subdomain.strip().lower()
 
 
 # --- expiry detection ------------------------------------------------------
@@ -98,6 +126,8 @@ def test_valid_token_refreshes_when_expired(mock_post, tmp_path):
     assert sent["refresh_token"] == "the-refresh"
     assert sent["client_id"] == "cid"
     assert sent["client_secret"] == "secret"
+    assert sent["expires_in"] == auth.ACCESS_TOKEN_TTL_SECONDS
+    assert sent["refresh_token_expires_in"] == auth.REFRESH_TOKEN_TTL_SECONDS
     assert "acme.zendesk.com/oauth/tokens" in mock_post.call_args.args[0]
 
 
@@ -115,6 +145,7 @@ def test_refresh_persists_rotated_credentials(mock_post, tmp_path):
     assert saved["oauth_token"] == "a2"
     assert saved["refresh_token"] == "r2"
     assert saved["expires_at"] == NOW + 3600
+    assert saved["refresh_token_expires_at"] == NOW + 2592000
     assert saved["subdomain"] == "acme"
 
 
@@ -163,6 +194,25 @@ def test_valid_token_raises_when_refresh_token_rejected(mock_post, tmp_path):
 
 
 @patch("zendesk_mcp.auth.httpx.post")
+def test_refresh_rejects_malformed_subdomain_before_sending_credentials(
+    mock_post, tmp_path
+):
+    cfg = write_config(
+        tmp_path,
+        subdomain="attacker.example/path",
+        refresh_token="refresh-secret",
+        expires_at=NOW - 10,
+        client_id="cid",
+        client_secret="client-secret",
+    )
+
+    with pytest.raises(auth.InvalidZendeskSubdomainError):
+        auth.valid_token(cfg, now=NOW)
+
+    mock_post.assert_not_called()
+
+
+@patch("zendesk_mcp.auth.httpx.post")
 def test_refresh_does_not_clobber_a_token_another_process_already_renewed(mock_post, tmp_path):
     """Two MCP servers share one config file; re-read before refreshing to avoid a rotation race."""
     cfg = write_config(tmp_path, refresh_token="r1", expires_at=NOW - 10, client_id="cid")
@@ -176,14 +226,69 @@ def test_refresh_does_not_clobber_a_token_another_process_already_renewed(mock_p
     mock_post.assert_not_called()
 
 
+@patch("zendesk_mcp.auth.httpx.post")
+def test_concurrent_refresh_uses_rotating_refresh_token_once(mock_post, tmp_path):
+    """Only one process may redeem Zendesk's single-use refresh token."""
+    first_post_started = threading.Event()
+    second_worker_started = threading.Event()
+    second_post_started = threading.Event()
+    release_first_post = threading.Event()
+
+    def delayed_response(*args, **kwargs):
+        if mock_post.call_count == 1:
+            first_post_started.set()
+        else:
+            second_post_started.set()
+        assert release_first_post.wait(timeout=2)
+        return token_response(access="shared-new-token", refresh="rotated-refresh")
+
+    def second_refresh():
+        second_worker_started.set()
+        return auth.valid_token(cfg, NOW, stale)
+
+    mock_post.side_effect = delayed_response
+    cfg = write_config(
+        tmp_path,
+        refresh_token="single-use-refresh",
+        expires_at=NOW - 10,
+        client_id="cid",
+        client_secret="s",
+    )
+    stale = json.loads(cfg.read_text())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(auth.valid_token, cfg, NOW, stale)
+        assert first_post_started.wait(timeout=2)
+        second = pool.submit(second_refresh)
+
+        try:
+            assert second_worker_started.wait(timeout=2)
+            # If the file lock is missing, the second worker reaches the token endpoint
+            # while the first request is deliberately held open.
+            assert not second_post_started.wait(timeout=0.1)
+            assert not second.done()
+            assert mock_post.call_count == 1
+        finally:
+            release_first_post.set()
+
+        assert first.result(timeout=2)[1] == "shared-new-token"
+        assert second.result(timeout=2)[1] == "shared-new-token"
+
+    mock_post.assert_called_once()
+
+
 # --- error classification --------------------------------------------------
 
 
-def test_api_error_message_upgrades_httpx_401():
+@patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme"})
+def test_api_error_message_upgrades_httpx_401(_mock_load):
+    request = httpx.Request(
+        "GET", "https://acme.zendesk.com/api/v2/users/search.json"
+    )
     exc = httpx.HTTPStatusError(
         "Client error '401 Unauthorized' for url 'https://acme.zendesk.com/api/v2/users/search.json'",
-        request=httpx.Request("GET", "https://acme.zendesk.com/api/v2/users/search.json"),
-        response=httpx.Response(401, json=EXPIRED_401),
+        request=request,
+        response=httpx.Response(401, json=EXPIRED_401, request=request),
     )
     msg = auth.api_error_message(exc)
     assert "zendesk-mcp setup" in msg
@@ -221,6 +326,58 @@ def test_api_error_message_does_not_flag_a_status_code_containing_401():
 def test_api_error_message_flags_unauthorized_wording():
     msg = auth.api_error_message(Exception("Client error '401 Unauthorized' for url ..."))
     assert "zendesk-mcp setup" in msg
+
+
+@patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme"})
+def test_api_error_message_does_not_flag_same_origin_unrelated_401(_mock_load):
+    exc = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=httpx.Request("GET", "https://acme.zendesk.com/api/v2/users/me.json"),
+        response=httpx.Response(
+            401,
+            json={"error": "unauthorized", "description": "missing permission"},
+            request=httpx.Request(
+                "GET", "https://acme.zendesk.com/api/v2/users/me.json"
+            ),
+        ),
+    )
+
+    msg = auth.api_error_message(exc)
+
+    assert msg.startswith("Zendesk API error:")
+    assert "zendesk-mcp setup" not in msg
+
+
+@patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme"})
+def test_api_error_message_does_not_flag_external_redirect_401(_mock_load):
+    request = httpx.Request("GET", "https://uploads.example.test/temporary-file")
+    exc = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=request,
+        response=httpx.Response(401, json=EXPIRED_401, request=request),
+    )
+
+    msg = auth.api_error_message(exc)
+
+    assert msg.startswith("Zendesk API error:")
+    assert "zendesk-mcp setup" not in msg
+
+
+@patch("zendesk_mcp.auth.load_config", return_value={"subdomain": "acme"})
+def test_api_error_message_does_not_flag_structured_non_401_invalid_token(
+    _mock_load,
+):
+    request = httpx.Request("GET", "https://acme.zendesk.com/api/v2/tickets.json")
+    exc = httpx.HTTPStatusError(
+        "403 Forbidden",
+        request=request,
+        response=httpx.Response(403, json=EXPIRED_401, request=request),
+    )
+
+    msg = auth.api_error_message(exc)
+
+    assert msg.startswith("Zendesk API error:")
+    assert "zendesk-mcp setup" not in msg
 
 
 # --- reactive refresh on 401 ----------------------------------------------
@@ -283,3 +440,133 @@ def test_request_injects_bearer_token(mock_request, tmp_path):
     auth.request("GET", "https://acme.zendesk.com/x", config_file=cfg, now=NOW)
 
     assert mock_request.call_args.kwargs["headers"]["Authorization"] == "Bearer old-tok"
+
+
+@patch("zendesk_mcp.auth.httpx.request")
+@patch("zendesk_mcp.auth.valid_token", return_value=("other", "other-token"))
+def test_request_rejects_subdomain_change_before_initial_send(
+    _mock_valid_token, mock_request, tmp_path
+):
+    cfg = write_config(tmp_path)
+
+    with pytest.raises(auth.UnsafeZendeskUrlError, match="changed before"):
+        auth.request("GET", "https://acme.zendesk.com/x", config_file=cfg, now=NOW)
+
+    mock_request.assert_not_called()
+
+
+@patch("zendesk_mcp.auth.refresh_rejected_token")
+@patch("zendesk_mcp.auth.httpx.request")
+def test_request_rejects_subdomain_change_before_retry(
+    mock_request, mock_refresh, tmp_path
+):
+    mock_request.return_value = httpx.Response(
+        401,
+        json=EXPIRED_401,
+        request=httpx.Request("GET", "https://acme.zendesk.com/x"),
+    )
+    mock_refresh.return_value = {
+        "subdomain": "other",
+        "oauth_token": "other-token",
+        "refresh_token": "other-refresh",
+        "client_id": "cid",
+    }
+    cfg = write_config(
+        tmp_path,
+        refresh_token="r1",
+        expires_at=NOW + 100_000,
+        client_id="cid",
+    )
+
+    with pytest.raises(auth.UnsafeZendeskUrlError, match="changed while refreshing"):
+        auth.request("GET", "https://acme.zendesk.com/x", config_file=cfg, now=NOW)
+
+    mock_request.assert_called_once()
+
+
+@patch("zendesk_mcp.auth.httpx.request")
+@patch("zendesk_mcp.auth.httpx.post")
+def test_request_rejects_untrusted_url_before_sending_or_refreshing(
+    mock_post, mock_request, tmp_path
+):
+    cfg = write_config(
+        tmp_path,
+        refresh_token="r1",
+        expires_at=NOW - 10,
+        client_id="cid",
+        client_secret="s",
+    )
+
+    with pytest.raises(auth.UnsafeZendeskUrlError):
+        auth.request("GET", "https://attacker.example/file", config_file=cfg, now=NOW)
+
+    mock_post.assert_not_called()
+    mock_request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://acme.zendesk.com/x",
+        "https://acme.zendesk.com.evil.example/x",
+        "https://acme.zendesk.com@evil.example/x",
+        "https://acme.zendesk.com:444/x",
+    ],
+)
+def test_validate_zendesk_url_rejects_lookalike_origins(url):
+    with pytest.raises(auth.UnsafeZendeskUrlError):
+        auth.validate_zendesk_url(url, "acme")
+
+
+@patch("zendesk_mcp.auth.httpx.request")
+@patch("zendesk_mcp.auth.httpx.post")
+def test_request_does_not_refresh_on_unrelated_401(mock_post, mock_request, tmp_path):
+    mock_request.return_value = httpx.Response(
+        401,
+        json={"error": "unauthorized", "description": "missing permission"},
+        request=httpx.Request("GET", "https://acme.zendesk.com/x"),
+    )
+    cfg = write_config(
+        tmp_path,
+        refresh_token="r1",
+        expires_at=NOW + 100_000,
+        client_id="cid",
+        client_secret="s",
+    )
+
+    response = auth.request("GET", "https://acme.zendesk.com/x", config_file=cfg, now=NOW)
+
+    assert response.status_code == 401
+    mock_post.assert_not_called()
+    mock_request.assert_called_once()
+
+
+@patch("zendesk_mcp.auth.httpx.request")
+@patch("zendesk_mcp.auth.httpx.post")
+def test_request_does_not_refresh_for_external_redirect_response(
+    mock_post, mock_request, tmp_path
+):
+    mock_request.return_value = httpx.Response(
+        401,
+        json=EXPIRED_401,
+        request=httpx.Request("GET", "https://uploads.example.test/temporary-file"),
+    )
+    cfg = write_config(
+        tmp_path,
+        refresh_token="r1",
+        expires_at=NOW + 100_000,
+        client_id="cid",
+        client_secret="s",
+    )
+
+    response = auth.request(
+        "GET",
+        "https://acme.zendesk.com/attachments/token/file",
+        config_file=cfg,
+        now=NOW,
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 401
+    mock_post.assert_not_called()
+    mock_request.assert_called_once()
