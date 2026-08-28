@@ -35,7 +35,7 @@ def test_list_macros_returns_active_only(mock_get_client):
     assert parsed[0]["actions"] == [{"field": "status", "value": "solved"}]
 
 
-@patch("zendesk_mcp.tools.macros.httpx.get")
+@patch("zendesk_mcp.tools.macros.auth.request")
 @patch("zendesk_mcp.tools.macros.get_oauth_session")
 def test_preview_macro_returns_result_payload(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -53,14 +53,14 @@ def test_preview_macro_returns_result_payload(mock_oauth, mock_httpx_get):
     result = _preview_macro_data(55)
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/macros/55/apply.json" in args[0]
+    assert "acme.zendesk.com/api/v2/macros/55/apply.json" in args[1]
     parsed = json.loads(result)
     assert "ticket" in parsed
     assert parsed["comment"]["body"] == "Resolved!"
 
 
 @patch("zendesk_mcp.tools.macros.get_client")
-@patch("zendesk_mcp.tools.macros.httpx.get")
+@patch("zendesk_mcp.tools.macros.auth.request")
 @patch("zendesk_mcp.tools.macros.get_oauth_session")
 def test_apply_macro_applies_changes_and_posts_comment(mock_oauth, mock_httpx_get, mock_get_client):
     mock_oauth.return_value = ("acme", "tok")
@@ -88,7 +88,7 @@ def test_apply_macro_applies_changes_and_posts_comment(mock_oauth, mock_httpx_ge
     result = _apply_macro_data(10, 55)
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/tickets/10/macros/55/apply.json" in args[0]
+    assert "acme.zendesk.com/api/v2/tickets/10/macros/55/apply.json" in args[1]
 
     assert loaded.status == "solved"
     assert mock_client.tickets.update.call_count == 2
@@ -100,7 +100,7 @@ def test_apply_macro_applies_changes_and_posts_comment(mock_oauth, mock_httpx_ge
 
 
 @patch("zendesk_mcp.tools.macros.get_client")
-@patch("zendesk_mcp.tools.macros.httpx.get")
+@patch("zendesk_mcp.tools.macros.auth.request")
 @patch("zendesk_mcp.tools.macros.get_oauth_session")
 def test_apply_macro_empty_result_returns_success(mock_oauth, mock_httpx_get, mock_get_client):
     mock_oauth.return_value = ("acme", "tok")
@@ -127,7 +127,7 @@ def test_apply_macro_empty_result_returns_success(mock_oauth, mock_httpx_get, mo
 
 
 @patch("zendesk_mcp.tools.macros.get_client")
-@patch("zendesk_mcp.tools.macros.httpx.get")
+@patch("zendesk_mcp.tools.macros.auth.request")
 @patch("zendesk_mcp.tools.macros.get_oauth_session")
 def test_apply_macro_ticket_changes_only_no_comment(mock_oauth, mock_httpx_get, mock_get_client):
     mock_oauth.return_value = ("acme", "tok")
@@ -158,7 +158,7 @@ def test_apply_macro_ticket_changes_only_no_comment(mock_oauth, mock_httpx_get, 
 
 
 @patch("zendesk_mcp.tools.macros.get_client")
-@patch("zendesk_mcp.tools.macros.httpx.get")
+@patch("zendesk_mcp.tools.macros.auth.request")
 @patch("zendesk_mcp.tools.macros.get_oauth_session")
 def test_apply_macro_comment_only_no_ticket_changes(mock_oauth, mock_httpx_get, mock_get_client):
     mock_oauth.return_value = ("acme", "tok")
