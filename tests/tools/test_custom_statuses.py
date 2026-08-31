@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
 
 
-@patch("zendesk_mcp.tools.custom_statuses.httpx.get")
+@patch("zendesk_mcp.tools.custom_statuses.auth.request")
 @patch("zendesk_mcp.tools.custom_statuses.get_oauth_session")
 def test_list_custom_statuses_happy_path(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -23,8 +23,8 @@ def test_list_custom_statuses_happy_path(mock_oauth, mock_httpx_get):
     result = _list_custom_statuses_data()
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/custom_statuses" in args[0]
-    assert args[0].endswith("/custom_statuses")
+    assert "acme.zendesk.com/api/v2/custom_statuses" in args[1]
+    assert args[1].endswith("/custom_statuses")
 
     parsed = json.loads(result)
     assert len(parsed) == 2

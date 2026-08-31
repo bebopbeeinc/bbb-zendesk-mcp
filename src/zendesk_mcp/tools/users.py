@@ -1,19 +1,20 @@
 import json
-import httpx
 from zendesk_mcp.client import get_oauth_session, ConfigError
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _search_users_data(query: str) -> str:
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     url = f"https://{subdomain}.zendesk.com/api/v2/users/search.json"
     try:
-        response = httpx.get(
+        response = auth.request(
+            "GET",
             url,
             params={"query": query},
-            headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
         response.raise_for_status()
@@ -25,7 +26,7 @@ def _search_users_data(query: str) -> str:
             "role": u.get("role"),
         } for u in users], indent=2)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_user_tools(mcp) -> None:

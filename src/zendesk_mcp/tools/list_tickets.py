@@ -1,6 +1,7 @@
 import json
-import httpx
 from zendesk_mcp.client import get_oauth_session, ConfigError
+from zendesk_mcp import auth
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 _VALID_SORT_BY = {"created_at", "updated_at", "priority", "status"}
 _VALID_SORT_ORDER = {"asc", "desc"}
@@ -21,22 +22,22 @@ def _get_tickets_data(
     page = max(1, int(page))
 
     try:
-        subdomain, token = get_oauth_session()
-    except ConfigError as e:
+        subdomain, _ = get_oauth_session()
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
 
     url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
     try:
-        response = httpx.get(
+        response = auth.request(
+            "GET",
             url,
             params={"page": page, "per_page": per_page, "sort_by": sort_by, "sort_order": sort_order},
-            headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
         response.raise_for_status()
         data = response.json()
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
     raw_tickets = data.get("tickets", [])
     tickets = [{

@@ -1,6 +1,7 @@
 import json
 from zenpy.lib.api_objects import Ticket as ZenpyTicket
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
 _VALID_TYPES = {"problem", "incident", "question", "task"}
@@ -55,10 +56,10 @@ def _create_ticket_data(
             "organization_id": refreshed.organization_id,
             "tags": list(getattr(refreshed, "tags", []) or []),
         }, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_create_ticket_tools(mcp) -> None:

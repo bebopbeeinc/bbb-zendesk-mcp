@@ -21,7 +21,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 - Python 3.10 or newer
 - A Zendesk OAuth client. A Zendesk admin can create one at:
   `https://<your-subdomain>.zendesk.com/admin/apps-integrations/apis/zendesk-api/oauth_clients`
-  Set the redirect URL to `http://localhost:8787/callback` and request scopes `read write`.
+  Use a **Confidential** client, set the redirect URL to
+  `http://localhost:8787/callback`, and allow the `read write` scopes.
 
 ## Install
 
@@ -62,6 +63,28 @@ You will be prompted for:
 The setup opens a browser for the OAuth authorization step, then writes a token to `~/.config/zendesk-mcp/config.json` (mode `0600`).
 
 If you have no browser, the URL is printed to the terminal — open it on any device, click **Allow**, and paste the resulting redirect URL back into the prompt.
+
+### Token expiry and refresh
+
+Zendesk access tokens expire. OAuth clients created on or after 2026-04-30 get a
+30-minute default lifetime; older clients issue non-expiring tokens unless an expiry is
+requested. Setup requests a 24-hour access token and a 90-day refresh token so the
+behaviour is the same either way, and the server renews the access token automatically —
+before it expires, and again if Zendesk rejects a token mid-request.
+
+To make that possible, the config file also stores `refresh_token`, `expires_at`,
+`refresh_token_expires_at`, `client_id`, and `client_secret` alongside the access token.
+Credential rotation is serialized across MCP processes and persisted atomically. Keep
+the file at mode `0600`; it is the same trust level as the access token itself. If your
+OAuth client returns no refresh token, setup says so and the token is used as-is.
+
+Re-run `.venv/bin/python -m zendesk_mcp setup` when:
+
+- the refresh token expires (90 days with no use), or
+- you revoke the OAuth grant in Zendesk.
+
+In either case the tools return `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
+rather than failing opaquely.
 
 ## Register with Claude Code
 
@@ -219,4 +242,3 @@ Tests run on Python 3.10, 3.11, and 3.12 in CI (see `.github/workflows/test.yml`
 [Apache-2.0](LICENSE)
 
 <!-- mcp-name: io.github.michaelrice/zendesk-mcp -->
-

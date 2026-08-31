@@ -1,15 +1,16 @@
 import sys
-from mcp.server.fastmcp import FastMCP
+
+try:
+    # mcp >= 2.0 renamed FastMCP to MCPServer and moved it out of mcp.server.fastmcp.
+    # The decorator API (tool/resource/prompt) and run() are unchanged.
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:  # pragma: no cover - exercised only on mcp 1.x
+    from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("zendesk-mcp")
 
 
-def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        from zendesk_mcp.setup import run_setup
-        run_setup()
-        return
-
+def register_all(mcp) -> None:
     from zendesk_mcp.tools.ticket import register_ticket_tools
     from zendesk_mcp.tools.comments import register_comments_tools
     from zendesk_mcp.tools.attachments import register_attachment_tools
@@ -50,6 +51,14 @@ def main() -> None:
     register_custom_status_tools(mcp)
     register_prompts(mcp)
 
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        from zendesk_mcp.setup import run_setup
+        run_setup()
+        return
+
+    register_all(mcp)
     mcp.run()
 
 

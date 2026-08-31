@@ -1,5 +1,6 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError
 
 
 def _get_comments_data(ticket_id: int) -> str:
@@ -37,12 +38,12 @@ def _get_comments_data(ticket_id: int) -> str:
                 "attachments": attachments,
             })
         return json.dumps(result, indent=2)
-    except ConfigError as e:
+    except (ConfigError, TokenExpiredError) as e:
         return str(e)
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
             return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return f"Zendesk API error: {e}"
+        return api_error_message(e)
 
 
 def register_comments_tools(mcp) -> None:

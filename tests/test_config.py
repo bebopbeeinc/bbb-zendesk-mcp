@@ -42,6 +42,19 @@ def test_save_config_creates_file_with_correct_permissions(tmp_path):
     assert mode == "600"
 
 
+def test_save_config_failure_preserves_previous_credentials(tmp_path):
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"oauth_token": "still-valid"}))
+    from zendesk_mcp.config import save_config
+
+    with patch("zendesk_mcp.config.os.replace", side_effect=OSError("disk failure")):
+        with pytest.raises(OSError, match="disk failure"):
+            save_config({"oauth_token": "partial-new-value"}, cfg_file)
+
+    assert json.loads(cfg_file.read_text())["oauth_token"] == "still-valid"
+    assert list(tmp_path.glob(".config.json.*")) == []
+
+
 def test_attachment_cache_dir_includes_ticket_id(tmp_path):
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({

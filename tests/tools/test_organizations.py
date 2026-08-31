@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
 
 
-@patch("zendesk_mcp.tools.organizations.httpx.get")
+@patch("zendesk_mcp.tools.organizations.auth.request")
 @patch("zendesk_mcp.tools.organizations.get_oauth_session")
 def test_get_organization_returns_custom_fields(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
@@ -25,7 +25,7 @@ def test_get_organization_returns_custom_fields(mock_oauth, mock_httpx_get):
     result = _get_organization_data(100)
 
     args, kwargs = mock_httpx_get.call_args
-    assert "acme.zendesk.com/api/v2/organizations/100.json" in args[0]
+    assert "acme.zendesk.com/api/v2/organizations/100.json" in args[1]
     parsed = json.loads(result)
     assert parsed["id"] == 100
     assert parsed["name"] == "Acme Corp"
@@ -41,7 +41,7 @@ def test_get_organization_returns_config_error(mock_oauth):
     assert "zendesk-mcp setup" in result
 
 
-@patch("zendesk_mcp.tools.organizations.httpx.get")
+@patch("zendesk_mcp.tools.organizations.auth.request")
 @patch("zendesk_mcp.tools.organizations.get_oauth_session")
 def test_get_organization_returns_not_found(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")

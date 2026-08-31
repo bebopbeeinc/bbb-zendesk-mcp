@@ -1,12 +1,23 @@
+from getpass import getpass
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+from filelock import Timeout as FileLockTimeout
 
-from zendesk_mcp.config import config_path, save_config
+from zendesk_mcp.auth import (
+    ACCESS_TOKEN_TTL_SECONDS,
+    REFRESH_LOCK_TIMEOUT_SECONDS,
+    REFRESH_TOKEN_TTL_SECONDS,
+    InvalidZendeskSubdomainError,
+    validate_zendesk_subdomain,
+)
+from zendesk_mcp.config import config_file_lock, config_path, load_config, save_config
 
 REDIRECT_URI = "http://localhost:8787/callback"
 CALLBACK_PORT = 8787
@@ -23,7 +34,20 @@ def _extract_code(raw: str) -> str | None:
     return raw
 
 
-def _exchange_code(subdomain: str, code: str, client_id: str, client_secret: str) -> str:
+def _exchange_code(
+    subdomain: str,
+    code: str,
+    client_id: str,
+    client_secret: str,
+    now: float | None = None,
+) -> dict:
+    """Exchange the authorization code for a token pair.
+
+    ``expires_in`` is requested explicitly: without it, a legacy OAuth client (created
+    before 2026-04-30) returns a non-expiring access token and no refresh token, leaving
+    nothing to renew when Zendesk later applies expiry.
+    """
+    subdomain = validate_zendesk_subdomain(subdomain)
     response = httpx.post(
         f"https://{subdomain}.zendesk.com/oauth/tokens",
         json={
@@ -33,14 +57,93 @@ def _exchange_code(subdomain: str, code: str, client_id: str, client_secret: str
             "client_secret": client_secret,
             "redirect_uri": REDIRECT_URI,
             "scope": "read write",
+            "expires_in": ACCESS_TOKEN_TTL_SECONDS,
+            "refresh_token_expires_in": REFRESH_TOKEN_TTL_SECONDS,
         },
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()["access_token"]
+    body = response.json()
+
+    now = now if now is not None else time.time()
+    result = {"access_token": body["access_token"]}
+    if body.get("refresh_token"):
+        result["refresh_token"] = body["refresh_token"]
+    if body.get("expires_in"):
+        result["expires_at"] = int(now + body["expires_in"])
+    if body.get("refresh_token_expires_in"):
+        result["refresh_token_expires_at"] = int(
+            now + body["refresh_token_expires_in"]
+        )
+    return result
+
+
+def _updated_config(
+    existing: dict,
+    subdomain: str,
+    tokens: dict,
+    client_id: str,
+    client_secret: str,
+) -> dict:
+    """Replace OAuth credentials without discarding unrelated local preferences."""
+    subdomain = validate_zendesk_subdomain(subdomain)
+    updated = dict(existing)
+    for key in (
+        "oauth_token",
+        "refresh_token",
+        "expires_at",
+        "refresh_token_expires_at",
+        "client_id",
+        "client_secret",
+    ):
+        updated.pop(key, None)
+
+    updated["subdomain"] = subdomain
+    updated["oauth_token"] = tokens["access_token"]
+    updated.setdefault(
+        "attachment_cache_dir", "~/.cache/zendesk-mcp/attachments"
+    )
+
+    if tokens.get("refresh_token"):
+        updated["refresh_token"] = tokens["refresh_token"]
+        updated["client_id"] = client_id
+        updated["client_secret"] = client_secret
+    if tokens.get("expires_at"):
+        updated["expires_at"] = tokens["expires_at"]
+    if tokens.get("refresh_token_expires_at"):
+        updated["refresh_token_expires_at"] = tokens[
+            "refresh_token_expires_at"
+        ]
+    return updated
+
+
+def _persist_authorization(
+    subdomain: str,
+    tokens: dict,
+    client_id: str,
+    client_secret: str,
+    git_zen_field_id: int | None = None,
+    knowledge_base_enabled: bool = False,
+    config_file: Path | None = None,
+) -> None:
+    """Persist a new grant without racing a rotating-token refresh."""
+    with config_file_lock(config_file, timeout=REFRESH_LOCK_TIMEOUT_SECONDS):
+        config_data = _updated_config(
+            load_config(config_file),
+            subdomain,
+            tokens,
+            client_id,
+            client_secret,
+        )
+        if git_zen_field_id is not None:
+            config_data["git_zen_field_id"] = git_zen_field_id
+        if knowledge_base_enabled:
+            config_data["knowledge_base_enabled"] = True
+        save_config(config_data, config_file)
 
 
 def _verify_token(subdomain: str, token: str) -> dict:
+    subdomain = validate_zendesk_subdomain(subdomain)
     response = httpx.get(
         f"https://{subdomain}.zendesk.com/api/v2/users/me.json",
         headers={"Authorization": f"Bearer {token}"},
@@ -64,6 +167,12 @@ def run_setup() -> None:
     else:
         subdomain = input("  Zendesk subdomain (e.g. 'acme' for acme.zendesk.com): ").strip()
 
+    try:
+        subdomain = validate_zendesk_subdomain(subdomain)
+    except InvalidZendeskSubdomainError as exc:
+        print(f"\n  Invalid Zendesk subdomain: {exc}\n")
+        sys.exit(1)
+
     if env_client_id:
         client_id = env_client_id
         print(f"  OAuth client_id: {client_id} (from ZENDESK_CLIENT_ID)")
@@ -74,7 +183,7 @@ def run_setup() -> None:
         client_secret = env_client_secret
         print("  OAuth client_secret: *** (from ZENDESK_CLIENT_SECRET)")
     else:
-        client_secret = input("  OAuth client_secret: ").strip()
+        client_secret = getpass("  OAuth client_secret: ").strip()
 
     auth_url = (
         f"https://{subdomain}.zendesk.com/oauth/authorizations/new"
@@ -134,10 +243,12 @@ def run_setup() -> None:
 
     print("\n  Exchanging code for access token...")
     try:
-        token = _exchange_code(subdomain, code_holder["code"], client_id, client_secret)
+        tokens = _exchange_code(subdomain, code_holder["code"], client_id, client_secret)
     except Exception as e:
         print(f"\n  Token exchange failed: {e}\n")
         sys.exit(1)
+
+    token = tokens["access_token"]
 
     print("  Verifying token...")
     try:
@@ -152,24 +263,28 @@ def run_setup() -> None:
     git_zen_input = input(
         "  Git-Zen integration field ID (optional, press Enter to skip): "
     ).strip()
-    config_data = {
-        "subdomain": subdomain,
-        "oauth_token": token,
-        "attachment_cache_dir": "~/.cache/zendesk-mcp/attachments",
-    }
+    git_zen_field_id = None
     if git_zen_input:
         try:
-            config_data["git_zen_field_id"] = int(git_zen_input)
+            git_zen_field_id = int(git_zen_input)
         except ValueError:
             print(f"  Warning: '{git_zen_input}' is not a valid integer; skipping Git-Zen field ID.")
 
     kb_input = input(
         "  Enable Help Center knowledge base resource? (y/N): "
     ).strip().lower()
-    if kb_input in {"y", "yes"}:
-        config_data["knowledge_base_enabled"] = True
-
-    save_config(config_data)
+    try:
+        _persist_authorization(
+            subdomain,
+            tokens,
+            client_id,
+            client_secret,
+            git_zen_field_id=git_zen_field_id,
+            knowledge_base_enabled=kb_input in {"y", "yes"},
+        )
+    except FileLockTimeout:
+        print("\n  Setup failed: timed out waiting to save OAuth credentials.\n")
+        sys.exit(1)
 
     cfg_path = config_path()
     if role == "admin":
@@ -180,3 +295,10 @@ def run_setup() -> None:
         print(f"  Verified: connected as {email} (role: {role})")
 
     print(f"  Token saved to {cfg_path}\n")
+
+    if tokens.get("refresh_token"):
+        print("  Access token renews automatically; no action needed until the refresh")
+        print(f"  token expires ({REFRESH_TOKEN_TTL_SECONDS // 86400} days of no use).\n")
+    else:
+        print("  Note: this OAuth client issued a non-expiring token and no refresh token.")
+        print("     If Zendesk later applies expiry to it, re-run this setup.\n")

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zendesk-mcp"
-version = "0.1.2"
+version = "0.1.4"
 description = "Zendesk MCP server for Claude Code and other MCP clients"
 readme = "README.md"
 license = "Apache-2.0"
@@ -38,8 +38,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "mcp>=1.0.0,<2",
+    "mcp>=1.0.0",
     "zenpy>=2.0.0",
+    "requests>=2.31.0",
+    "filelock>=3.13.1",
     "pdfplumber>=0.11.0",
     "Pillow>=10.0.0",
     "httpx>=0.27.0",

@@ -53,13 +53,10 @@ def test_list_attachments_returns_error_on_config_error(mock_get_client):
     assert "zendesk-mcp setup" in result
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_text_file_returns_content(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_text_file_returns_content(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     mock_httpx_get.return_value = MagicMock(
         content=b"ERROR: disk full\nstack trace here",
         raise_for_status=lambda: None,
@@ -73,13 +70,10 @@ def test_download_text_file_returns_content(mock_httpx_get, mock_load_config, tm
     assert result["cached_path"].endswith("12345/debug.log")
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_zip_returns_file_tree(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_zip_returns_file_tree(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     import io
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -103,13 +97,10 @@ def test_download_zip_returns_file_tree(mock_httpx_get, mock_load_config, tmp_pa
     assert (unpack_dir / "readme.txt").read_text() == "hello from zip"
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_zip_caps_file_list_when_large(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_zip_caps_file_list_when_large(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     import io
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -128,13 +119,10 @@ def test_download_zip_caps_file_list_when_large(mock_httpx_get, mock_load_config
     assert result["truncated"] is True
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_with_dest_dir_uses_override(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "cache"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_with_dest_dir_uses_override(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "cache" / "12345"
     mock_httpx_get.return_value = MagicMock(
         content=b"hello",
         raise_for_status=lambda: None,
@@ -150,13 +138,10 @@ def test_download_with_dest_dir_uses_override(mock_httpx_get, mock_load_config, 
     assert not (tmp_path / "cache").exists()
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_image_returns_base64(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_image_returns_base64(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     import io
     from PIL import Image
     img = Image.new("RGB", (1, 1), color=(255, 0, 0))
@@ -175,13 +160,10 @@ def test_download_image_returns_base64(mock_httpx_get, mock_load_config, tmp_pat
     assert len(result["data"]) > 0
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_corrupt_zip_returns_error_not_exception(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_corrupt_zip_returns_error_not_exception(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     mock_httpx_get.return_value = MagicMock(
         content=b"this is not a zip",
         raise_for_status=lambda: None,
@@ -195,13 +177,10 @@ def test_download_corrupt_zip_returns_error_not_exception(mock_httpx_get, mock_l
     assert "cached_path" in result
 
 
-@patch("zendesk_mcp.tools.attachments.load_config")
-@patch("zendesk_mcp.tools.attachments.httpx.get")
-def test_download_tar_returns_file_tree(mock_httpx_get, mock_load_config, tmp_path):
-    mock_load_config.return_value = {
-        "oauth_token": "tok",
-        "attachment_cache_dir": str(tmp_path / "attachments"),
-    }
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_tar_returns_file_tree(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     import io
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
