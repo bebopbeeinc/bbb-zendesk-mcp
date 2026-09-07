@@ -25,6 +25,40 @@ def test_get_ticket_returns_structured_fields(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.ticket.get_client")
+def test_get_ticket_returns_custom_fields(mock_get_client):
+    """custom_fields carries the per-game metadata (player profile uid, game, tier),
+    which is the join key into analytics. Dropping it makes the ticket unattributable."""
+    mock_client = MagicMock()
+    mock_client.tickets.return_value = make_mock_ticket()
+    mock_get_client.return_value = mock_client
+
+    from zendesk_mcp.tools.ticket import _get_ticket_data
+    result = json.loads(_get_ticket_data(12345))
+
+    assert "custom_fields" in result
+    by_id = {f["id"]: f["value"] for f in result["custom_fields"]}
+    assert by_id[30481513007639] == "d5ef2ec1-ea9e-40c1-8da5-dbc5dd877b9e"
+    assert by_id[30390717200919] == "Travel Crush 2.0"
+    # unset fields are preserved as None rather than filtered out, so callers can
+    # distinguish "not set on this ticket" from "not returned by the API"
+    assert 30390695540503 in by_id and by_id[30390695540503] is None
+
+
+@patch("zendesk_mcp.tools.ticket.get_client")
+def test_get_ticket_custom_fields_defaults_to_empty_list(mock_get_client):
+    mock_client = MagicMock()
+    ticket = make_mock_ticket()
+    ticket.custom_fields = None
+    mock_client.tickets.return_value = ticket
+    mock_get_client.return_value = mock_client
+
+    from zendesk_mcp.tools.ticket import _get_ticket_data
+    result = json.loads(_get_ticket_data(12345))
+
+    assert result["custom_fields"] == []
+
+
+@patch("zendesk_mcp.tools.ticket.get_client")
 def test_get_ticket_returns_error_string_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
