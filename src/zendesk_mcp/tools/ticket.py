@@ -63,6 +63,7 @@ def _get_ticket_data(ticket_id: int) -> str:
             "created_at": str(ticket.created_at),
             "updated_at": str(ticket.updated_at),
             "description": ticket.description,
+            "custom_fields": ticket.custom_fields or [],
             "ticket_url": f"https://{_get_subdomain()}.zendesk.com/agent/tickets/{ticket.id}",
         }, indent=2)
     except (ConfigError, TokenExpiredError) as e:
@@ -81,7 +82,7 @@ def _get_subdomain() -> str:
 def register_ticket_tools(mcp) -> None:
     @mcp.tool()
     def zendesk_get_ticket(ticket_id: int) -> str:
-        """Get a Zendesk ticket by ID. Returns ticket fields including status, priority, requester, assignee, tags, and description."""
+        """Get a Zendesk ticket by ID. Returns ticket fields including status, priority, requester, assignee, tags, description, and custom_fields (a list of {id, value} — this is where per-game metadata such as the player profile uid lives)."""
         return _get_ticket_data(ticket_id)
 
     @mcp.tool()

@@ -46,6 +46,16 @@ def make_mock_ticket(ticket_id=12345, subject="Login fails after password reset"
     ticket.description = "User cannot log in after resetting password."
     ticket.url = "https://example.zendesk.com/api/v2/tickets/12345.json"
 
+    # Shape mirrors the live API: every field defined on the form is returned,
+    # with value None for the ones that are not set on this ticket.
+    ticket.custom_fields = [
+        {"id": 30481513007639, "value": "d5ef2ec1-ea9e-40c1-8da5-dbc5dd877b9e"},
+        {"id": 30390717200919, "value": "Travel Crush 2.0"},
+        {"id": 30390677271959, "value": "Non Payer"},
+        {"id": 360037612934, "value": "2.5.2"},
+        {"id": 30390695540503, "value": None},
+    ]
+
     ticket.requester = make_mock_user("Jane Smith", "jane@customer.com", "end-user")
     ticket.assignee = make_mock_user("Test Agent", "agent@example.com", "agent", 202)
 
