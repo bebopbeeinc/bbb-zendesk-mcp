@@ -648,3 +648,31 @@ def test_request_sends_basic_auth_for_api_token(monkeypatch, tmp_path):
     assert seen["headers"]["Authorization"].startswith("Basic ")
     assert _base64.b64decode(seen["headers"]["Authorization"].split()[1]).decode() \
         == "contact@bebopbee.com/token:tok"
+
+
+def test_api_token_rejection_is_recognised_without_invalid_token_error(monkeypatch, tmp_path):
+    """Zendesk answers a bad API token with "Couldn't authenticate you", not invalid_token.
+
+    Gating the API-token branch on the OAuth predicate meant it never fired, and the caller
+    got a bare 401 instead of a message naming the token.
+    """
+    import json as _json
+    import pytest
+    from zendesk_mcp import auth
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(_json.dumps(
+        {"subdomain": "bebopbeehelp", "email": "contact@bebopbee.com", "api_token": "bad"}))
+
+    class _Resp:
+        status_code = 401
+        url = "https://bebopbeehelp.zendesk.com/api/v2/groups.json"
+        headers = {"content-type": "application/json"}
+        text = '{"error": "Couldn\'t authenticate you"}'
+        def json(self): return {"error": "Couldn't authenticate you"}
+
+    monkeypatch.setattr(auth.httpx, "request", lambda *a, **k: _Resp())
+    with pytest.raises(auth.TokenExpiredError) as excinfo:
+        auth.request("GET", "https://bebopbeehelp.zendesk.com/api/v2/groups.json",
+                     config_file=cfg_file)
+    assert "API token" in str(excinfo.value)

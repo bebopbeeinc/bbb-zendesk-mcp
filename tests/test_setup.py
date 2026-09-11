@@ -208,3 +208,53 @@ def test_persist_authorization_waits_for_refresh_then_wins(tmp_path):
     assert saved["refresh_token"] == "new-refresh"
     assert saved["client_id"] == "new-client-id"
     assert saved["knowledge_base_enabled"] is True
+
+
+# --- API-token setup ----------------------------------------------------------------
+
+def test_api_token_setup_verifies_before_writing(monkeypatch, tmp_path, capsys):
+    """A mistyped token must not cost the working credential.
+
+    setup replaces what the server is currently authenticating with, so writing an
+    unverified credential means the mistake surfaces at 4am somewhere that cannot
+    explain it.
+    """
+    import json
+    from zendesk_mcp import setup as setup_mod
+
+    cfg = tmp_path / "config.json"
+    original = {"subdomain": "acme", "oauth_token": "known-good", "refresh_token": "r"}
+    cfg.write_text(json.dumps(original))
+    monkeypatch.setattr("zendesk_mcp.config.config_path", lambda: cfg)
+    monkeypatch.setattr(setup_mod, "sys", __import__("sys"))
+    monkeypatch.setenv("ZENDESK_SUBDOMAIN", "acme")
+    monkeypatch.setenv("ZENDESK_EMAIL", "contact@acme.com")
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "wrong")
+
+    def reject(subdomain, email, token):
+        raise RuntimeError("401 Unauthorized")
+    monkeypatch.setattr(setup_mod, "_verify_api_token", reject)
+
+    import pytest
+    with pytest.raises(SystemExit):
+        setup_mod.run_api_token_setup()
+
+    assert json.loads(cfg.read_text()) == original, "config must be untouched on failure"
+    assert "Nothing was changed" in capsys.readouterr().out
+
+
+def test_oauth_setup_clears_api_token_credentials():
+    """Otherwise a successful re-authorisation has no effect.
+
+    api_token_credentials() takes precedence when present, so leaving email/api_token in
+    place would send every request out as the old token's account while setup reported
+    success.
+    """
+    from zendesk_mcp.setup import _updated_config
+
+    existing = {"email": "old@acme.com", "api_token": "stale", "attachment_cache_dir": "/keep"}
+    updated = _updated_config(existing, "acme", {"access_token": "new"}, "cid", "secret")
+    assert "email" not in updated
+    assert "api_token" not in updated
+    assert updated["oauth_token"] == "new"
+    assert updated["attachment_cache_dir"] == "/keep", "unrelated preferences survive"

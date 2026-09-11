@@ -71,16 +71,16 @@ class RefreshingZendeskSession(requests.Session):
 
         headers = self._authorization_headers(kwargs.pop("headers", None), token, snapshot)
         response = super().request(method, url, headers=headers, **kwargs)
-        if not auth.is_zendesk_invalid_token_response(response, self._subdomain):
-            return response
 
         if auth.api_token_credentials(snapshot):
-            # Nothing to refresh; retrying would resend the same rejected credential.
-            raise auth.TokenExpiredError(
-                "Zendesk rejected the API token. Check it is still active in Admin "
-                "Center > Apps and integrations > Zendesk API, and that the account "
-                "it belongs to is still an active agent."
-            )
+            # Before the OAuth guard: nothing to refresh, and a rejected API token does
+            # not answer with the invalid_token error that guard looks for.
+            if auth.is_zendesk_auth_rejection(response, self._subdomain):
+                raise auth.TokenExpiredError(auth.API_TOKEN_REJECTED)
+            return response
+
+        if not auth.is_zendesk_invalid_token_response(response, self._subdomain):
+            return response
 
         refreshed = auth.refresh_rejected_token(
             token,

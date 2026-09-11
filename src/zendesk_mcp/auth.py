@@ -168,6 +168,37 @@ def is_zendesk_invalid_token_response(response, subdomain: str) -> bool:
     return True
 
 
+def is_zendesk_auth_rejection(response, subdomain: str) -> bool:
+    """Any 401 from the trusted Zendesk origin, whatever spelling the error uses.
+
+    ``is_zendesk_invalid_token_response`` deliberately matches ONLY ``error ==
+    "invalid_token"``, because it decides whether to spend a refresh. An API token has no
+    refresh, and Zendesk rejects one with ``Couldn't authenticate you`` -- so gating the
+    API-token branch on the OAuth predicate meant it never fired and the caller got a bare
+    401 instead of a message naming the token.
+    """
+    if getattr(response, "status_code", None) != 401:
+        return False
+    try:
+        response_url = getattr(response, "url", None)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    if response_url is None:
+        return False
+    try:
+        validate_zendesk_url(str(response_url), subdomain)
+    except UnsafeZendeskUrlError:
+        return False
+    return True
+
+
+API_TOKEN_REJECTED = (
+    "Zendesk rejected the API token. Check it is still active in Admin Center > Apps and "
+    "integrations > APIs > Zendesk API > Settings > Token access, and that the account it "
+    "belongs to is still an active agent."
+)
+
+
 def refresh_access_token(
     cfg: dict, config_file: Path | None = None, now: float | None = None
 ) -> dict:
@@ -325,18 +356,15 @@ def request(
                "Authorization": authorization_header(snapshot, token)}
     response = httpx.request(method, url, headers=headers, **kwargs)
 
-    if not is_zendesk_invalid_token_response(response, subdomain):
+    if api_token_credentials(snapshot):
+        # Checked before the OAuth guard: there is no refresh to attempt, and Zendesk's
+        # rejection of a token does not carry the invalid_token error that guard requires.
+        if is_zendesk_auth_rejection(response, subdomain):
+            raise TokenExpiredError(API_TOKEN_REJECTED)
         return response
 
-    if api_token_credentials(snapshot):
-        # There is no refresh path for an API token. Retrying would repeat the same
-        # rejected credential and then report it as a refresh failure, which sends
-        # whoever reads it looking for the wrong problem.
-        raise TokenExpiredError(
-            "Zendesk rejected the API token. Check that it is still active in Admin "
-            "Center > Apps and integrations > Zendesk API, and that the account it "
-            "belongs to is still an active agent."
-        )
+    if not is_zendesk_invalid_token_response(response, subdomain):
+        return response
 
     cfg = refresh_rejected_token(
         token,

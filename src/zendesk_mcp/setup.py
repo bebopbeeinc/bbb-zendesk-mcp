@@ -95,6 +95,11 @@ def _updated_config(
         "refresh_token_expires_at",
         "client_id",
         "client_secret",
+        # And the API-token credentials. They take precedence when present, so leaving
+        # them here would let a successful OAuth re-authorisation appear to work while
+        # every request still went out as the old token's account.
+        "email",
+        "api_token",
     ):
         updated.pop(key, None)
 
@@ -153,6 +158,26 @@ def _verify_token(subdomain: str, token: str) -> dict:
     return response.json()["user"]
 
 
+def _verify_api_token(subdomain: str, email: str, token: str) -> dict:
+    """Prove the credential works before anything is written.
+
+    The OAuth path verifies with _verify_token() for the same reason: setup replaces the
+    credential the server is currently using, so accepting an unverified one on trust
+    means a typo silently destroys a working grant and reports success. The mistake then
+    surfaces at 4am, in a place that cannot explain it.
+    """
+    import base64 as _b64
+    subdomain = validate_zendesk_subdomain(subdomain)
+    raw = _b64.b64encode(f"{email}/token:{token}".encode()).decode()
+    response = httpx.get(
+        f"https://{subdomain}.zendesk.com/api/v2/users/me.json",
+        headers={"Authorization": f"Basic {raw}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["user"]
+
+
 def run_api_token_setup() -> None:
     """Configure an API token instead of an OAuth grant.
 
@@ -182,6 +207,17 @@ def run_api_token_setup() -> None:
         print("\n  Both an account email and an API token are required.\n")
         sys.exit(1)
 
+    # Verify BEFORE touching the config, so a mistyped token cannot cost the working one.
+    try:
+        who = _verify_api_token(subdomain, email, token)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"\n  Zendesk rejected those credentials: {exc}")
+        print("  Nothing was changed; the existing configuration is untouched.")
+        print("  Check the token in Admin Center > Apps and integrations > APIs > "
+              "Zendesk API > Settings > Token access,")
+        print("  and that the email is the account the token was created under.\n")
+        sys.exit(1)
+
     from zendesk_mcp.config import config_file_lock, load_config, save_config
     with config_file_lock():
         cfg = load_config()
@@ -196,7 +232,14 @@ def run_api_token_setup() -> None:
             cfg.pop(key, None)
         save_config(cfg)
 
-    print(f"\n  Saved. Authenticating as {email} on {subdomain}.zendesk.com.")
+    role = who.get("role", "unknown")
+    print(f"\n  Saved. Authenticating as {who.get('name', email)} <{email}> "
+          f"on {subdomain}.zendesk.com (role: {role}).")
+    if role == "end-user":
+        # An end-user cannot read the agent-side API at all, so this would fail on the
+        # first real call rather than here.
+        print("  WARNING: that account is an end-user, not an agent — most tools will "
+              "return nothing.")
     print("  This credential does not expire and is not tied to anyone's login session.\n")
 
 
