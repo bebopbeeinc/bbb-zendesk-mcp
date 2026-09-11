@@ -29,7 +29,7 @@ class RefreshingZendeskSession(requests.Session):
         self.mount("https://", HTTPAdapter(**Zenpy.http_adapter_kwargs()))
 
     @staticmethod
-    def _authorization_headers(headers, token: str) -> dict:
+    def _authorization_headers(headers, token: str, cfg: dict | None = None) -> dict:
         # Do not allow a caller-supplied Authorization spelling to survive alongside
         # the managed token in requests' case-insensitive header collection.
         managed = {
@@ -37,7 +37,7 @@ class RefreshingZendeskSession(requests.Session):
             for key, value in (headers or {}).items()
             if key.lower() != "authorization"
         }
-        managed["Authorization"] = f"Bearer {token}"
+        managed["Authorization"] = auth.authorization_header(cfg or {}, token)
         return managed
 
     def rebuild_auth(
@@ -69,10 +69,18 @@ class RefreshingZendeskSession(requests.Session):
                 "Zendesk subdomain changed after the client was created"
             )
 
-        headers = self._authorization_headers(kwargs.pop("headers", None), token)
+        headers = self._authorization_headers(kwargs.pop("headers", None), token, snapshot)
         response = super().request(method, url, headers=headers, **kwargs)
         if not auth.is_zendesk_invalid_token_response(response, self._subdomain):
             return response
+
+        if auth.api_token_credentials(snapshot):
+            # Nothing to refresh; retrying would resend the same rejected credential.
+            raise auth.TokenExpiredError(
+                "Zendesk rejected the API token. Check it is still active in Admin "
+                "Center > Apps and integrations > Zendesk API, and that the account "
+                "it belongs to is still an active agent."
+            )
 
         refreshed = auth.refresh_rejected_token(
             token,

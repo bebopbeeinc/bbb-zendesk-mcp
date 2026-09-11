@@ -16,6 +16,33 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 - (Optional) Expose Zendesk Help Center articles as an MCP resource
 - (Optional) Read linked GitLab issues / MRs / commits via the [Git-Zen](https://www.zendesk.com/marketplace/apps/support/630175/git-zen-zendesk-and-gitlab-integration/) Zendesk app
 
+
+## Authenticating as a service account (recommended for unattended use)
+
+`zendesk-mcp setup` creates an **OAuth grant**, which is created by a person signing in.
+Two consequences follow, and both have bitten us:
+
+- The integration inherits that person's account. When they leave, it stops.
+- Refresh tokens rotate, so only one machine can hold a working grant. Re-authorising on a
+  laptop silently invalidates the build box.
+
+An **API token** has neither property. Issue one while signed in as a shared account
+(`contact@…`, not a named human):
+
+> Admin Center → Apps and integrations → APIs → Zendesk API → Settings → Token access → Add API token
+
+Then:
+
+```bash
+zendesk-mcp setup --api-token
+# or non-interactively:
+ZENDESK_SUBDOMAIN=acme ZENDESK_EMAIL=contact@acme.com ZENDESK_API_TOKEN=… zendesk-mcp setup --api-token
+```
+
+Setup removes the OAuth credentials when it writes the token, so there is exactly one answer
+to "what is this authenticating as". The token does not expire; if Zendesk rejects it, the
+error says so rather than reporting a failed refresh, because there is no refresh to fail.
+
 ## Prerequisites
 
 - Python 3.10 or newer

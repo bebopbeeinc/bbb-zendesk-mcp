@@ -9,6 +9,7 @@ never refreshed.
 Refreshing rotates the refresh token and invalidates the previous pair, so the new
 credentials must be persisted on every refresh.
 """
+import base64
 import re
 import time
 from pathlib import Path
@@ -54,12 +55,44 @@ def expired_message(detail: str = "") -> str:
     return f"{base} {REAUTH_HINT}"
 
 
+def api_token_credentials(cfg: dict) -> tuple[str, str] | None:
+    """``(email, api_token)`` when the config authenticates with a Zendesk API token.
+
+    An API token belongs to a Zendesk USER, so the identity it carries is whichever
+    account the token was issued for. Pointing it at a shared service account --
+    contact@ rather than a named person -- is what makes an unattended integration
+    survive that person leaving, which OAuth here cannot: an OAuth grant is created by
+    somebody signing in, and it dies with their account.
+
+    It also removes the single-holder constraint. Refresh tokens rotate, so exactly one
+    machine can hold a working OAuth grant and re-authorising on a second one silently
+    invalidates the first. API tokens do not rotate, so a laptop and a build box can use
+    the same credential without fighting.
+    """
+    email = str(cfg.get("email") or "").strip()
+    token = str(cfg.get("api_token") or "").strip()
+    return (email, token) if email and token else None
+
+
+def authorization_header(cfg: dict, oauth_token: str | None = None) -> str:
+    """The Authorization header value for whichever credential is configured."""
+    creds = api_token_credentials(cfg)
+    if creds:
+        email, token = creds
+        # Zendesk's API-token scheme: basic auth with "<email>/token" as the username.
+        raw = base64.b64encode(f"{email}/token:{token}".encode()).decode()
+        return f"Basic {raw}"
+    return f"Bearer {oauth_token}"
+
+
 def is_expired(cfg: dict, now: float | None = None) -> bool:
     """True if the stored token has passed (or is about to pass) its expiry.
 
     A config with no ``expires_at`` came from a non-expiring OAuth client and is
     reported as valid.
     """
+    if api_token_credentials(cfg):
+        return False                     # API tokens do not expire and cannot be refreshed
     expires_at = cfg.get("expires_at")
     if not expires_at:
         return False
@@ -250,6 +283,10 @@ def valid_token(
     """
     cfg = cfg_snapshot if cfg_snapshot is not None else load_config(config_file)
     subdomain = cfg.get("subdomain", "").strip()
+    creds = api_token_credentials(cfg)
+    if creds:
+        # No expiry and nothing to refresh; the token IS the credential.
+        return validate_zendesk_subdomain(subdomain) if subdomain else subdomain, creds[1]
     token = cfg.get("oauth_token", "").strip()
     if not subdomain or not token:
         # Caller maps this to the existing "not configured" ConfigError.
@@ -284,11 +321,22 @@ def request(
         raise UnsafeZendeskUrlError(
             "Zendesk subdomain changed before the request could be sent"
         )
-    headers = {**kwargs.pop("headers", {}), "Authorization": f"Bearer {token}"}
+    headers = {**kwargs.pop("headers", {}),
+               "Authorization": authorization_header(snapshot, token)}
     response = httpx.request(method, url, headers=headers, **kwargs)
 
     if not is_zendesk_invalid_token_response(response, subdomain):
         return response
+
+    if api_token_credentials(snapshot):
+        # There is no refresh path for an API token. Retrying would repeat the same
+        # rejected credential and then report it as a refresh failure, which sends
+        # whoever reads it looking for the wrong problem.
+        raise TokenExpiredError(
+            "Zendesk rejected the API token. Check that it is still active in Admin "
+            "Center > Apps and integrations > Zendesk API, and that the account it "
+            "belongs to is still an active agent."
+        )
 
     cfg = refresh_rejected_token(
         token,

@@ -570,3 +570,81 @@ def test_request_does_not_refresh_for_external_redirect_response(
     assert response.status_code == 401
     mock_post.assert_not_called()
     mock_request.assert_called_once()
+
+
+# --- API-token authentication -------------------------------------------------------
+# An OAuth grant is created by a person signing in and dies with their account, which is
+# how an unattended integration ends up depending on one employee. An API token issued to
+# a shared service account does not.
+
+import base64 as _base64
+
+
+def test_api_token_credentials_requires_both_halves():
+    from zendesk_mcp import auth
+    assert auth.api_token_credentials({"email": "a@b.com", "api_token": "t"}) == ("a@b.com", "t")
+    assert auth.api_token_credentials({"email": "a@b.com"}) is None
+    assert auth.api_token_credentials({"api_token": "t"}) is None
+    assert auth.api_token_credentials({"email": " ", "api_token": "t"}) is None
+    assert auth.api_token_credentials({}) is None
+
+
+def test_authorization_header_uses_basic_for_api_token():
+    from zendesk_mcp import auth
+    header = auth.authorization_header({"email": "contact@bebopbee.com", "api_token": "tok"})
+    assert header.startswith("Basic ")
+    decoded = _base64.b64decode(header.split(" ", 1)[1]).decode()
+    # Zendesk's scheme: the username is "<email>/token".
+    assert decoded == "contact@bebopbee.com/token:tok"
+
+
+def test_authorization_header_falls_back_to_bearer():
+    from zendesk_mcp import auth
+    assert auth.authorization_header({}, "abc123") == "Bearer abc123"
+
+
+def test_api_token_never_looks_expired():
+    from zendesk_mcp import auth
+    # An expires_at left behind by a previous OAuth setup must not make a token config
+    # look stale and send the client into a refresh it cannot perform.
+    cfg = {"email": "a@b.com", "api_token": "t", "expires_at": 1}
+    assert auth.is_expired(cfg, now=10_000_000_000) is False
+
+
+def test_valid_token_returns_api_token_without_refreshing(tmp_path, monkeypatch):
+    from zendesk_mcp import auth
+    cfg = {"subdomain": "bebopbeehelp", "email": "a@b.com", "api_token": "tok",
+           "expires_at": 1, "refresh_token": "r", "client_id": "c"}
+    def explode(*a, **k):
+        raise AssertionError("must not attempt a refresh for an API token")
+    monkeypatch.setattr(auth, "_refresh_under_lock", explode)
+    assert auth.valid_token(cfg_snapshot=cfg) == ("bebopbeehelp", "tok")
+
+
+def test_request_sends_basic_auth_for_api_token(monkeypatch, tmp_path):
+    """The wire format, not just the helper — this is what Zendesk actually receives."""
+    import json as _json
+    from zendesk_mcp import auth
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(_json.dumps(
+        {"subdomain": "bebopbeehelp", "email": "contact@bebopbee.com", "api_token": "tok"}))
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = "{}"
+        def json(self): return {}
+
+    def fake_request(method, url, **kwargs):
+        seen["headers"] = kwargs.get("headers", {})
+        return _Resp()
+
+    monkeypatch.setattr(auth.httpx, "request", fake_request)
+    auth.request("GET", "https://bebopbeehelp.zendesk.com/api/v2/groups.json",
+                 config_file=cfg_file)
+    assert seen["headers"]["Authorization"].startswith("Basic ")
+    assert _base64.b64decode(seen["headers"]["Authorization"].split()[1]).decode() \
+        == "contact@bebopbee.com/token:tok"

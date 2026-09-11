@@ -153,8 +153,58 @@ def _verify_token(subdomain: str, token: str) -> dict:
     return response.json()["user"]
 
 
+def run_api_token_setup() -> None:
+    """Configure an API token instead of an OAuth grant.
+
+    OAuth here is created by a person signing in, so the integration inherits that
+    person's account and stops working when they leave -- and because refresh tokens
+    rotate, only one machine can hold a working grant at a time. An API token issued to a
+    shared service account (contact@, not a named human) has neither property.
+
+    Create one at: Admin Center > Apps and integrations > APIs > Zendesk API >
+    Settings > Token access > Add API token, while signed in AS that account.
+    """
+    import os
+    print("\n  zendesk-mcp setup (API token)\n")
+
+    subdomain = os.environ.get("ZENDESK_SUBDOMAIN", "") or input(
+        "  Zendesk subdomain (e.g. 'acme' for acme.zendesk.com): ").strip()
+    try:
+        subdomain = validate_zendesk_subdomain(subdomain)
+    except InvalidZendeskSubdomainError as exc:
+        print(f"\n  Invalid Zendesk subdomain: {exc}\n")
+        sys.exit(1)
+
+    email = os.environ.get("ZENDESK_EMAIL", "") or input(
+        "  Zendesk account the token belongs to (use a shared one, not a person): ").strip()
+    token = os.environ.get("ZENDESK_API_TOKEN", "") or getpass("  API token: ").strip()
+    if not email or not token:
+        print("\n  Both an account email and an API token are required.\n")
+        sys.exit(1)
+
+    from zendesk_mcp.config import config_file_lock, load_config, save_config
+    with config_file_lock():
+        cfg = load_config()
+        cfg["subdomain"] = subdomain
+        cfg["email"] = email
+        cfg["api_token"] = token
+        # Remove the OAuth credentials so there is exactly one answer to "what is this
+        # authenticating as". Leaving both would make the effective identity depend on
+        # which branch of the code happened to run.
+        for key in ("oauth_token", "refresh_token", "client_id", "client_secret",
+                    "expires_at"):
+            cfg.pop(key, None)
+        save_config(cfg)
+
+    print(f"\n  Saved. Authenticating as {email} on {subdomain}.zendesk.com.")
+    print("  This credential does not expire and is not tied to anyone's login session.\n")
+
+
 def run_setup() -> None:
     import os
+    if "--api-token" in sys.argv:
+        run_api_token_setup()
+        return
     print("\n  zendesk-mcp setup\n")
 
     env_subdomain = os.environ.get("ZENDESK_SUBDOMAIN", "")
