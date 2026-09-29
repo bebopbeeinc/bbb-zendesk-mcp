@@ -2,13 +2,17 @@ import json
 from zendesk_mcp.client import get_oauth_session, ConfigError
 from zendesk_mcp import auth
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 
 def _list_custom_statuses_data() -> str:
     try:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
+    except Exception as e:
+        # a refresh that fails another way: a bad subdomain, a config file it cannot write
+        raise ToolError(api_error_message(e)) from e
     url = f"https://{subdomain}.zendesk.com/api/v2/custom_statuses"
     try:
         response = auth.request("GET", url, timeout=30)
@@ -23,7 +27,7 @@ def _list_custom_statuses_data() -> str:
             "default": s.get("default"),
         } for s in statuses], indent=2)
     except Exception as e:
-        return api_error_message(e)
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_custom_status_tools(mcp) -> None:

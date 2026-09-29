@@ -1,6 +1,7 @@
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.config import load_config
-from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.auth import api_error_message, is_auth_error, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 
 def _get_gitlab_context(ticket_id: int) -> str:
@@ -17,7 +18,11 @@ def _get_gitlab_context(ticket_id: int) -> str:
             try:
                 author = client.users(id=comment.author_id)
                 author_name = author.name
-            except Exception:
+            except TokenExpiredError:
+                raise
+            except Exception as e:
+                if is_auth_error(e):    # the call failing, not an unknown author
+                    raise
                 author_name = "Unknown"
 
             visibility = "Internal Note" if not comment.public else "Public Reply"
@@ -61,11 +66,11 @@ def _get_gitlab_context(ticket_id: int) -> str:
 _Source: Zendesk ticket #{ticket_id} — {ticket_url}_
 """
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_gitlab_context_tools(mcp) -> None:

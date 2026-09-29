@@ -1,5 +1,7 @@
+import pytest
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 @patch("zendesk_mcp.tools.write_comments.Ticket")
@@ -45,11 +47,13 @@ def test_post_internal_note_sets_public_false(mock_get_client, mock_comment_cls,
 
 
 @patch("zendesk_mcp.tools.write_comments.get_client")
-def test_post_comment_returns_error_on_config_error(mock_get_client):
+def test_post_comment_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.write_comments import _post_comment_data
-    result = _post_comment_data(12345, "hello", public=True)
+    with pytest.raises(ToolError) as err:
+        _post_comment_data(12345, "hello", public=True)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -57,7 +61,7 @@ def test_post_comment_returns_error_on_config_error(mock_get_client):
 @patch("zendesk_mcp.tools.write_comments.Ticket")
 @patch("zendesk_mcp.tools.write_comments.Comment")
 @patch("zendesk_mcp.tools.write_comments.get_client")
-def test_post_comment_returns_error_on_ticket_not_found(mock_get_client, mock_comment_cls, mock_ticket_cls):
+def test_post_comment_raises_on_ticket_not_found(mock_get_client, mock_comment_cls, mock_ticket_cls):
     mock_client = MagicMock()
     mock_client.tickets.update.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
@@ -65,7 +69,9 @@ def test_post_comment_returns_error_on_ticket_not_found(mock_get_client, mock_co
     mock_ticket_cls.return_value = MagicMock()
 
     from zendesk_mcp.tools.write_comments import _post_comment_data
-    result = _post_comment_data(99999, "hello", public=True)
+    with pytest.raises(ToolError) as err:
+        _post_comment_data(99999, "hello", public=True)
+    result = str(err.value)
 
     assert "99999" in result
     assert "not found" in result.lower()

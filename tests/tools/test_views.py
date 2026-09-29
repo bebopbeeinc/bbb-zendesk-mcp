@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _make_view(view_id: int, title: str):
@@ -90,19 +92,37 @@ def test_get_view_tickets_returns_essential_fields(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.views.get_client")
-def test_list_views_returns_config_error(mock_get_client):
+def test_list_views_raises_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.views import _list_views_data
-    result = _list_views_data()
+    with pytest.raises(ToolError) as err:
+        _list_views_data()
+    result = str(err.value)
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.views.auth.request")
 @patch("zendesk_mcp.tools.views.get_oauth_session")
-def test_get_view_returns_not_found(mock_oauth, mock_httpx_get):
+def test_get_view_raises_not_found(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
     mock_httpx_get.side_effect = Exception("404 Not Found")
     from zendesk_mcp.tools.views import _get_view_data
-    result = _get_view_data(999)
+    with pytest.raises(ToolError) as err:
+        _get_view_data(999)
+    result = str(err.value)
     assert "999" in result
     assert "not found" in result.lower()
+
+
+@patch("zendesk_mcp.tools.views.get_client")
+def test_view_tickets_report_the_channel_each_ticket_arrived_on(mock_get_client):
+    from zenpy.lib.api_objects import Via
+    t = _make_ticket(7)
+    t.via = Via(channel="facebook")
+    mock_client = MagicMock()
+    mock_client.views.tickets.return_value = [t, _make_ticket(8)]
+    mock_get_client.return_value = mock_client
+
+    from zendesk_mcp.tools.views import _get_view_tickets_data
+    parsed = json.loads(_get_view_tickets_data(1))
+    assert [x["channel"] for x in parsed] == ["facebook", None]

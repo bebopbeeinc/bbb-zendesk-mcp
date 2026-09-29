@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 @patch("zendesk_mcp.tools.users.auth.request")
@@ -45,8 +47,10 @@ def test_search_users_empty_result(mock_oauth, mock_httpx_get):
 
 
 @patch("zendesk_mcp.tools.users.get_oauth_session")
-def test_search_users_returns_config_error(mock_oauth):
+def test_search_users_raises_config_error(mock_oauth):
     mock_oauth.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.users import _search_users_data
-    result = _search_users_data("test")
+    with pytest.raises(ToolError) as err:
+        _search_users_data("test")
+    result = str(err.value)
     assert "zendesk-mcp setup" in result

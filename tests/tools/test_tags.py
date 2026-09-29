@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _make_ticket(ticket_id: int, tags: list):
@@ -76,19 +78,23 @@ def test_remove_tag_is_idempotent_when_tag_missing(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.tags.get_client")
-def test_add_tag_returns_error_on_config_error(mock_get_client):
+def test_add_tag_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.tags import _add_tag_data
-    result = _add_tag_data(10, "tag")
+    with pytest.raises(ToolError) as err:
+        _add_tag_data(10, "tag")
+    result = str(err.value)
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.tags.get_client")
-def test_add_tag_returns_error_on_not_found(mock_get_client):
+def test_add_tag_raises_on_not_found(mock_get_client):
     mock_client = MagicMock()
     mock_client.tickets.side_effect = Exception("RecordNotFound: Couldn't find Ticket")
     mock_get_client.return_value = mock_client
     from zendesk_mcp.tools.tags import _add_tag_data
-    result = _add_tag_data(99, "tag")
+    with pytest.raises(ToolError) as err:
+        _add_tag_data(99, "tag")
+    result = str(err.value)
     assert "99" in result
     assert "not found" in result.lower()

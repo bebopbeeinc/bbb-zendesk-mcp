@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 @patch("zendesk_mcp.tools.list_tickets.auth.request")
@@ -12,7 +14,7 @@ def test_get_tickets_happy_path(mock_oauth, mock_httpx_get):
         "tickets": [
             {"id": 1, "subject": "a", "status": "open", "priority": "low", "description": "d1",
              "created_at": "2026-05-01T00:00:00Z", "updated_at": "2026-05-02T00:00:00Z",
-             "requester_id": 10, "assignee_id": 20},
+             "requester_id": 10, "assignee_id": 20, "via": {"channel": "facebook"}},
             {"id": 2, "subject": "b", "status": "new", "priority": "high", "description": "d2",
              "created_at": "2026-05-03T00:00:00Z", "updated_at": "2026-05-04T00:00:00Z",
              "requester_id": 11, "assignee_id": None},
@@ -34,6 +36,7 @@ def test_get_tickets_happy_path(mock_oauth, mock_httpx_get):
     assert kwargs["params"]["sort_order"] == "desc"
 
     parsed = json.loads(result)
+    assert [t["channel"] for t in parsed["tickets"]] == ["facebook", None]
     assert parsed["page"] == 1
     assert parsed["per_page"] == 25
     assert parsed["count"] == 2
@@ -61,7 +64,9 @@ def test_get_tickets_caps_per_page(mock_oauth, mock_httpx_get):
 @patch("zendesk_mcp.tools.list_tickets.auth.request")
 def test_get_tickets_rejects_invalid_sort_by(mock_httpx_get):
     from zendesk_mcp.tools.list_tickets import _get_tickets_data
-    result = _get_tickets_data(sort_by="banana")
+    with pytest.raises(ToolError) as err:
+        _get_tickets_data(sort_by="banana")
+    result = str(err.value)
     assert "invalid sort_by" in result.lower()
     assert "banana" in result
     mock_httpx_get.assert_not_called()
@@ -70,7 +75,9 @@ def test_get_tickets_rejects_invalid_sort_by(mock_httpx_get):
 @patch("zendesk_mcp.tools.list_tickets.auth.request")
 def test_get_tickets_rejects_invalid_sort_order(mock_httpx_get):
     from zendesk_mcp.tools.list_tickets import _get_tickets_data
-    result = _get_tickets_data(sort_order="sideways")
+    with pytest.raises(ToolError) as err:
+        _get_tickets_data(sort_order="sideways")
+    result = str(err.value)
     assert "invalid sort_order" in result.lower()
     mock_httpx_get.assert_not_called()
 
@@ -96,8 +103,10 @@ def test_get_tickets_returns_previous_page_when_paginated(mock_oauth, mock_httpx
 
 
 @patch("zendesk_mcp.tools.list_tickets.get_oauth_session")
-def test_get_tickets_returns_config_error_message_when_unconfigured(mock_oauth):
+def test_get_tickets_raises_config_error_when_unconfigured(mock_oauth):
     mock_oauth.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.list_tickets import _get_tickets_data
-    result = _get_tickets_data()
+    with pytest.raises(ToolError) as err:
+        _get_tickets_data()
+    result = str(err.value)
     assert "zendesk-mcp setup" in result

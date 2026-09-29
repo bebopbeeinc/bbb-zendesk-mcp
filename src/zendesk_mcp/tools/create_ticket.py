@@ -2,6 +2,8 @@ import json
 from zenpy.lib.api_objects import Ticket as ZenpyTicket
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
+from zendesk_mcp.tools.channel import ticket_channel
 
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
 _VALID_TYPES = {"problem", "incident", "question", "task"}
@@ -18,9 +20,9 @@ def _create_ticket_data(
     custom_fields: list | None = None,
 ) -> str:
     if priority is not None and priority not in _VALID_PRIORITIES:
-        return f"Invalid priority '{priority}'. Valid values: {', '.join(sorted(_VALID_PRIORITIES))}"
+        raise ToolError(f"Invalid priority '{priority}'. Valid values: {', '.join(sorted(_VALID_PRIORITIES))}")
     if type is not None and type not in _VALID_TYPES:
-        return f"Invalid type '{type}'. Valid values: {', '.join(sorted(_VALID_TYPES))}"
+        raise ToolError(f"Invalid type '{type}'. Valid values: {', '.join(sorted(_VALID_TYPES))}")
     try:
         client = get_client()
         kwargs = {"subject": subject, "description": description}
@@ -40,7 +42,13 @@ def _create_ticket_data(
         audit = client.tickets.create(ticket)
         created_id = getattr(getattr(audit, "ticket", None), "id", None)
         if created_id is None:
-            return "Ticket created but ID could not be determined from Zendesk response."
+            # The write succeeded. An error here would invite a retry, and a retry creates a
+            # second ticket: report the success, and say what is missing.
+            return json.dumps({
+                "id": None,
+                "subject": subject,
+                "warning": "Ticket created but ID could not be determined from Zendesk response.",
+            }, indent=2)
         refreshed = client.tickets(id=created_id)
         return json.dumps({
             "id": refreshed.id,
@@ -49,6 +57,7 @@ def _create_ticket_data(
             "status": refreshed.status,
             "priority": refreshed.priority,
             "type": getattr(refreshed, "type", None),
+            "channel": ticket_channel(refreshed),
             "created_at": str(refreshed.created_at),
             "updated_at": str(refreshed.updated_at),
             "requester_id": refreshed.requester_id,
@@ -57,9 +66,9 @@ def _create_ticket_data(
             "tags": list(getattr(refreshed, "tags", []) or []),
         }, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return api_error_message(e)
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_create_ticket_tools(mcp) -> None:

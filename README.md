@@ -83,7 +83,7 @@ Re-run `.venv/bin/python -m zendesk_mcp setup` when:
 - the refresh token expires (90 days with no use), or
 - you revoke the OAuth grant in Zendesk.
 
-In either case the tools return `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
+In either case the tools fail with `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
 rather than failing opaquely.
 
 ## Register with Claude Code
@@ -133,14 +133,39 @@ Write tools (`zendesk_post_comment`, `zendesk_post_internal_note`, `zendesk_set_
 
 ## Tools
 
+**A failure is always an error result, never a successful one.** When a call fails — Zendesk
+refuses a search, the token is expired, a ticket does not exist, an argument is invalid, an
+attachment will not unpack — the tool raises, and the client receives an error result
+(`isError: true`) carrying the message behind the SDK's prefix, e.g.
+
+```
+Error executing tool zendesk_search_tickets: Zendesk API error: {"error": "invalid", "description": "Invalid search: Error filtering on field: via_id"}
+```
+
+So a successful result never reports a failure. Most tools return JSON; a few return prose on
+success, by design: `zendesk_set_ticket_status`, `zendesk_assign_ticket`,
+`zendesk_post_comment` and `zendesk_post_internal_note` return a one-line confirmation, and
+`zendesk_ticket_to_gitlab_context` returns Markdown. `zendesk_create_ticket` is the one success
+that can carry a `warning`: when Zendesk creates the ticket but its response has no id, the
+result is `{"id": null, "warning": ...}` rather than an error, so a caller does not retry and
+create a duplicate.
+
+Every tool that returns ticket records — `zendesk_search_tickets`, `zendesk_get_ticket`,
+`zendesk_get_tickets`, `zendesk_get_view_tickets`, `zendesk_create_ticket`,
+`zendesk_update_ticket` and `zendesk_apply_macro` — includes `channel`: the channel the ticket
+arrived on (Zendesk's `via.channel`: `web`, `email`, `api`, `facebook`, `native_messaging`,
+`sunshine_conversations_facebook_messenger`, …). Search accepts it too:
+`via:sunshine_conversations_facebook_messenger` finds Facebook Messenger tickets, where
+`via:messenger` is an invalid search.
+
 ### Tickets
 
 | Tool | What it does |
 |---|---|
-| `zendesk_search_tickets` | Search tickets by status, priority, type, assignee, requester, tags, or keyword |
-| `zendesk_get_tickets` | List tickets with pagination and sorting (page, per_page, sort_by, sort_order) |
-| `zendesk_get_ticket` | Get one ticket's metadata |
-| `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields) |
+| `zendesk_search_tickets` | Search tickets by status, priority, type, assignee, requester, tags, or keyword; each result carries its `channel`. A query Zendesk rejects is an error |
+| `zendesk_get_tickets` | List tickets with pagination and sorting (page, per_page, sort_by, sort_order), each with its `channel` |
+| `zendesk_get_ticket` | Get one ticket's metadata, including its `channel` |
+| `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields); returns it with its `channel` |
 | `zendesk_update_ticket` | Update one or more fields on an existing ticket (status, priority, subject, type, assignee_id, requester_id, group_id, custom_status_id, tags, custom_fields, due_at) |
 | `zendesk_get_comments` | Get the conversation thread on a ticket |
 | `zendesk_list_attachments` | List attachments on a ticket |
@@ -164,7 +189,7 @@ Write tools (`zendesk_post_comment`, `zendesk_post_internal_note`, `zendesk_set_
 |---|---|
 | `zendesk_list_views` | List all active views |
 | `zendesk_get_view` | Get a view's filter conditions and execution settings |
-| `zendesk_get_view_tickets` | Fetch tickets currently matching a view |
+| `zendesk_get_view_tickets` | Fetch tickets currently matching a view, each with its `channel` |
 | `zendesk_list_macros` | List active macros with their actions |
 | `zendesk_preview_macro` | Preview what changes a macro would make |
 | `zendesk_apply_macro` | Apply a macro to a ticket (applies field changes and posts any comment) |
@@ -211,7 +236,7 @@ If your Zendesk instance uses the [Git-Zen](https://www.zendesk.com/marketplace/
 }
 ```
 
-Without this configured, `zendesk_get_git_zen_links` returns a "not configured" message.
+Without this configured, `zendesk_get_git_zen_links` fails with a "not configured" error.
 
 ## Optional: Help Center knowledge base
 
