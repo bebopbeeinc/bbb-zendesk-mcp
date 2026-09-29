@@ -51,11 +51,14 @@ def _download_attachment_data(
     ticket_id: int,
     dest_dir: str | None = None,
 ) -> str:
-    if dest_dir:
-        target_dir = Path(dest_dir).expanduser()
-    else:
-        target_dir = attachment_cache_dir(ticket_id)
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if dest_dir:
+            target_dir = Path(dest_dir).expanduser()
+        else:
+            target_dir = attachment_cache_dir(ticket_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise ToolError(f"Cannot create the download directory: {e}") from e
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
     dest = target_dir / safe_filename
@@ -63,9 +66,12 @@ def _download_attachment_data(
     try:
         response = auth.request("GET", attachment_url, follow_redirects=True)
         response.raise_for_status()
-        dest.write_bytes(response.content)
     except Exception as e:
         raise ToolError(f"Download failed: {api_error_message(e)}") from e
+    try:
+        dest.write_bytes(response.content)
+    except Exception as e:
+        raise ToolError(f"Downloaded, but could not write {dest}: {e}") from e
 
     suffix = Path(filename).suffix.lower()
 
@@ -92,7 +98,7 @@ def _download_attachment_data(
         "type": "binary",
         "message": "Binary file — content not returned. Use cached_path to access it.",
         "cached_path": str(dest),
-        "size_bytes": dest.stat().st_size,
+        "size_bytes": len(response.content),
     })
 
 
@@ -128,7 +134,9 @@ def _handle_zip(dest: Path) -> str:
             for member in safe_members:
                 zf.extract(member, unpack_dir)
         return _archive_summary(dest, unpack_dir)
-    except zipfile.BadZipFile as e:
+    except Exception as e:
+        # Not only BadZipFile: an encrypted member (RuntimeError), a compression method zipfile
+        # lacks (NotImplementedError), a truncated archive (EOFError, zlib.error), a disk error.
         raise ToolError(f"Failed to unpack zip: {e} (the file is downloaded: cached_path {dest})") from e
 
 
@@ -142,7 +150,8 @@ def _handle_tar(dest: Path) -> str:
             ]
             tf.extractall(unpack_dir, members=safe_members)
         return _archive_summary(dest, unpack_dir)
-    except tarfile.TarError as e:
+    except Exception as e:
+        # Not only TarError: a truncated gzip stream (EOFError, zlib.error), a disk error.
         raise ToolError(f"Failed to unpack tar: {e} (the file is downloaded: cached_path {dest})") from e
 
 

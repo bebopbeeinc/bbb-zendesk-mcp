@@ -1,7 +1,9 @@
 import json
 from cachetools.func import ttl_cache
-from zendesk_mcp.client import get_client
+from zendesk_mcp.auth import TokenExpiredError, api_error_message
+from zendesk_mcp.client import ConfigError, get_client
 from zendesk_mcp.config import load_config
+from zendesk_mcp.errors import ResourceError
 
 
 def _get_knowledge_base_data() -> str:
@@ -44,4 +46,11 @@ def register_knowledge_base_resource(mcp) -> None:
 
     @mcp.resource("zendesk://knowledge-base", mime_type="application/json", description="Zendesk Help Center articles, grouped by section")
     def knowledge_base() -> str:
-        return _get_knowledge_base_data_cached()
+        # A failed read is an error with its message, as for the tools. (ttl_cache does not
+        # cache an exception, so the next read tries again.)
+        try:
+            return _get_knowledge_base_data_cached()
+        except (ConfigError, TokenExpiredError) as e:
+            raise ResourceError(str(e)) from e
+        except Exception as e:
+            raise ResourceError(api_error_message(e)) from e

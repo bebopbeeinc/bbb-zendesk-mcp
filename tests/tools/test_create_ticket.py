@@ -116,7 +116,7 @@ def test_create_ticket_raises_generic_error_on_api_failure(mock_get_client, mock
 
 @patch("zendesk_mcp.tools.create_ticket.ZenpyTicket")
 @patch("zendesk_mcp.tools.create_ticket.get_client")
-def test_create_ticket_raises_when_audit_lacks_ticket(mock_get_client, mock_ticket_cls):
+def test_create_ticket_without_an_id_succeeds_with_a_warning(mock_get_client, mock_ticket_cls):
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_ticket_cls.return_value = MagicMock()
@@ -126,9 +126,9 @@ def test_create_ticket_raises_when_audit_lacks_ticket(mock_get_client, mock_tick
     mock_client.tickets.create.return_value = audit
 
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    with pytest.raises(ToolError) as err:
-        _create_ticket_data(subject="x", description="y")
-    result = str(err.value)
+    # The ticket WAS created. An error would invite a retry, and a retry a duplicate.
+    result = json.loads(_create_ticket_data(subject="x", description="y"))
 
-    assert "could not be determined" in result.lower()
+    assert result["id"] is None and result["subject"] == "x"
+    assert "could not be determined" in result["warning"].lower()
     mock_client.tickets.assert_not_called()

@@ -11,7 +11,10 @@ _NOT_CONFIGURED_MESSAGE = (
 
 
 def _get_git_zen_links_data(ticket_id: int) -> str:
-    field_id = load_config().get("git_zen_field_id")
+    try:
+        field_id = load_config().get("git_zen_field_id")
+    except Exception as e:
+        raise ToolError(api_error_message(e)) from e
     if field_id is None:
         raise ToolError(_NOT_CONFIGURED_MESSAGE)
 

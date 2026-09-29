@@ -1,6 +1,6 @@
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.config import load_config
-from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.auth import api_error_message, is_auth_error, TokenExpiredError
 from zendesk_mcp.errors import ToolError
 
 
@@ -18,7 +18,11 @@ def _get_gitlab_context(ticket_id: int) -> str:
             try:
                 author = client.users(id=comment.author_id)
                 author_name = author.name
-            except Exception:
+            except TokenExpiredError:
+                raise
+            except Exception as e:
+                if is_auth_error(e):    # the call failing, not an unknown author
+                    raise
                 author_name = "Unknown"
 
             visibility = "Internal Note" if not comment.public else "Public Reply"

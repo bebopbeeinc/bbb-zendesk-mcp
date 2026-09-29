@@ -1,6 +1,6 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
-from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.auth import api_error_message, is_auth_error, TokenExpiredError
 from zendesk_mcp.errors import ToolError
 
 
@@ -17,7 +17,13 @@ def _get_comments_data(ticket_id: int) -> str:
                     "email": author.email,
                     "role": author.role,
                 }
-            except Exception:
+            except TokenExpiredError:
+                raise
+            except Exception as e:
+                # An expired or revoked token is the whole call failing, never an "Unknown"
+                # author on an otherwise successful answer.
+                if is_auth_error(e):
+                    raise
                 author_info = {"name": "Unknown", "email": "", "role": ""}
 
             attachments = [

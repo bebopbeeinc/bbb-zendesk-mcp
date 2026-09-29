@@ -133,15 +133,30 @@ Write tools (`zendesk_post_comment`, `zendesk_post_internal_note`, `zendesk_set_
 
 ## Tools
 
-**A failure is an error, never an answer.** When Zendesk refuses a call — an invalid search, an
-expired token, a ticket that does not exist, a bad argument — the tool raises, and the client
-receives an error result (`isError: true`) carrying the message, e.g. `Zendesk API error:
-{"error": "invalid", "description": "Invalid search: ..."}`. A successful result is always the
-data the tool describes, so a caller can parse it without first checking whether it is prose.
+**A failure is always an error result, never a successful one.** When a call fails — Zendesk
+refuses a search, the token is expired, a ticket does not exist, an argument is invalid, an
+attachment will not unpack — the tool raises, and the client receives an error result
+(`isError: true`) carrying the message behind the SDK's prefix, e.g.
 
-Every tool that returns tickets includes `channel`: the channel the ticket arrived on (Zendesk's
-`via.channel` — `web`, `email`, `api`, `facebook`, …), so a Messenger or Facebook ticket can be
-told apart without guessing search syntax.
+```
+Error executing tool zendesk_search_tickets: Zendesk API error: {"error": "invalid", "description": "Invalid search: Error filtering on field: via_id"}
+```
+
+So a successful result never reports a failure. Most tools return JSON; a few return prose on
+success, by design: `zendesk_set_ticket_status`, `zendesk_assign_ticket`,
+`zendesk_post_comment` and `zendesk_post_internal_note` return a one-line confirmation, and
+`zendesk_ticket_to_gitlab_context` returns Markdown. `zendesk_create_ticket` is the one success
+that can carry a `warning`: when Zendesk creates the ticket but its response has no id, the
+result is `{"id": null, "warning": ...}` rather than an error, so a caller does not retry and
+create a duplicate.
+
+Every tool that returns ticket records — `zendesk_search_tickets`, `zendesk_get_ticket`,
+`zendesk_get_tickets`, `zendesk_get_view_tickets`, `zendesk_create_ticket`,
+`zendesk_update_ticket` and `zendesk_apply_macro` — includes `channel`: the channel the ticket
+arrived on (Zendesk's `via.channel`: `web`, `email`, `api`, `facebook`, `native_messaging`,
+`sunshine_conversations_facebook_messenger`, …). Search accepts it too:
+`via:sunshine_conversations_facebook_messenger` finds Facebook Messenger tickets, where
+`via:messenger` is an invalid search.
 
 ### Tickets
 
@@ -150,7 +165,7 @@ told apart without guessing search syntax.
 | `zendesk_search_tickets` | Search tickets by status, priority, type, assignee, requester, tags, or keyword; each result carries its `channel`. A query Zendesk rejects is an error |
 | `zendesk_get_tickets` | List tickets with pagination and sorting (page, per_page, sort_by, sort_order), each with its `channel` |
 | `zendesk_get_ticket` | Get one ticket's metadata, including its `channel` |
-| `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields) |
+| `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields); returns it with its `channel` |
 | `zendesk_update_ticket` | Update one or more fields on an existing ticket (status, priority, subject, type, assignee_id, requester_id, group_id, custom_status_id, tags, custom_fields, due_at) |
 | `zendesk_get_comments` | Get the conversation thread on a ticket |
 | `zendesk_list_attachments` | List attachments on a ticket |

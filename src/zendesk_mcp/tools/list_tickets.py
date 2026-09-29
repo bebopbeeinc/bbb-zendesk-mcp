@@ -27,6 +27,9 @@ def _get_tickets_data(
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
         raise ToolError(str(e)) from e
+    except Exception as e:
+        # a refresh that fails another way: a bad subdomain, a config file it cannot write
+        raise ToolError(api_error_message(e)) from e
 
     url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
     try:

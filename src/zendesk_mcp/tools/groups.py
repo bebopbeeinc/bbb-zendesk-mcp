@@ -10,6 +10,9 @@ def _get_groups_data() -> str:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
         raise ToolError(str(e)) from e
+    except Exception as e:
+        # a refresh that fails another way: a bad subdomain, a config file it cannot write
+        raise ToolError(api_error_message(e)) from e
     url = f"https://{subdomain}.zendesk.com/api/v2/groups.json"
     try:
         response = auth.request("GET", url, timeout=30)
@@ -25,6 +28,9 @@ def _get_group_users_data(group_id: int) -> str:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
         raise ToolError(str(e)) from e
+    except Exception as e:
+        # a refresh that fails another way: a bad subdomain, a config file it cannot write
+        raise ToolError(api_error_message(e)) from e
     url = f"https://{subdomain}.zendesk.com/api/v2/groups/{group_id}/users.json"
     try:
         response = auth.request("GET", url, timeout=30)
