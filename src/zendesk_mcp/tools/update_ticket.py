@@ -4,6 +4,7 @@ from zenpy.lib.api_objects import Ticket
 
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 _VALID_STATUSES = {"new", "open", "pending", "hold", "solved", "closed"}
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
@@ -19,13 +20,13 @@ _UPDATABLE_FIELDS = {
 def _update_ticket_data(ticket_id: int, **fields) -> str:
     provided = {k: v for k, v in fields.items() if v is not None and k in _UPDATABLE_FIELDS}
     if not provided:
-        return "Nothing to update: provide at least one field besides ticket_id."
+        raise ToolError("Nothing to update: provide at least one field besides ticket_id.")
     if "status" in provided and provided["status"] not in _VALID_STATUSES:
-        return f"Invalid status '{provided['status']}'. Valid values: {', '.join(sorted(_VALID_STATUSES))}"
+        raise ToolError(f"Invalid status '{provided['status']}'. Valid values: {', '.join(sorted(_VALID_STATUSES))}")
     if "priority" in provided and provided["priority"] not in _VALID_PRIORITIES:
-        return f"Invalid priority '{provided['priority']}'. Valid values: {', '.join(sorted(_VALID_PRIORITIES))}"
+        raise ToolError(f"Invalid priority '{provided['priority']}'. Valid values: {', '.join(sorted(_VALID_PRIORITIES))}")
     if "type" in provided and provided["type"] not in _VALID_TYPES:
-        return f"Invalid type '{provided['type']}'. Valid values: {', '.join(sorted(_VALID_TYPES))}"
+        raise ToolError(f"Invalid type '{provided['type']}'. Valid values: {', '.join(sorted(_VALID_TYPES))}")
     try:
         client = get_client()
         ticket = client.tickets(id=ticket_id)
@@ -50,16 +51,16 @@ def _update_ticket_data(ticket_id: int, **fields) -> str:
             "tags": list(getattr(refreshed, "tags", []) or []),
         }, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def _set_ticket_status_data(ticket_id: int, status: str) -> str:
     if status not in _VALID_STATUSES:
-        return f"Invalid status '{status}'. Valid values: {', '.join(sorted(_VALID_STATUSES))}"
+        raise ToolError(f"Invalid status '{status}'. Valid values: {', '.join(sorted(_VALID_STATUSES))}")
     try:
         client = get_client()
         ticket = Ticket(id=ticket_id)
@@ -67,11 +68,11 @@ def _set_ticket_status_data(ticket_id: int, status: str) -> str:
         client.tickets.update(ticket)
         return f"Ticket #{ticket_id} status set to '{status}'."
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def _assign_ticket_data(ticket_id: int, assignee_email: str) -> str:
@@ -82,18 +83,20 @@ def _assign_ticket_data(ticket_id: int, assignee_email: str) -> str:
         else:
             search_results = list(client.search(query=f"type:user email:{assignee_email}"))
             if not search_results:
-                return f"User not found: no Zendesk user with email: {assignee_email}"
+                raise ToolError(f"User not found: no Zendesk user with email: {assignee_email}")
             user = search_results[0]
         ticket = Ticket(id=ticket_id)
         ticket.assignee_id = user.id
         client.tickets.update(ticket)
         return f"Ticket #{ticket_id} assigned to {user.name} ({user.email})."
+    except ToolError:
+        raise
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_update_ticket_tools(mcp) -> None:

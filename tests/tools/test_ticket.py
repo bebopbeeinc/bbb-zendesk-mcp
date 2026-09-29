@@ -1,7 +1,9 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from tests.conftest import make_mock_ticket
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 @patch("zendesk_mcp.tools.ticket.get_client")
@@ -59,24 +61,28 @@ def test_get_ticket_custom_fields_defaults_to_empty_list(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.ticket.get_client")
-def test_get_ticket_returns_error_string_on_config_error(mock_get_client):
+def test_get_ticket_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.ticket import _get_ticket_data
-    result = _get_ticket_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
     assert not result.startswith("{")
 
 
 @patch("zendesk_mcp.tools.ticket.get_client")
-def test_get_ticket_returns_error_string_on_not_found(mock_get_client):
+def test_get_ticket_raises_on_not_found(mock_get_client):
     mock_client = MagicMock()
     mock_client.tickets.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
 
     from zendesk_mcp.tools.ticket import _get_ticket_data
-    result = _get_ticket_data(99999)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(99999)
+    result = str(err.value)
 
     assert "99999" in result
     assert "not found" in result.lower()
@@ -121,3 +127,28 @@ def test_search_tickets_no_keywords_behaves_as_before(mock_get_client):
 
     query = mock_client.search.call_args.kwargs["query"]
     assert query == "type:ticket"
+
+
+@patch("zendesk_mcp.tools.ticket.get_client")
+def test_search_and_get_report_the_channel_each_ticket_arrived_on(mock_get_client):
+    from zenpy.lib.api_objects import Via
+    ticket = make_mock_ticket()
+    ticket.via = Via(channel="facebook")
+    mock_client = MagicMock()
+    mock_client.search.return_value = [ticket]
+    mock_client.tickets.return_value = ticket
+    mock_get_client.return_value = mock_client
+
+    from zendesk_mcp.tools.ticket import _search_tickets_data, _get_ticket_data
+    assert json.loads(_search_tickets_data(keywords=None, status=None, limit=5))[0]["channel"] == "facebook"
+    assert json.loads(_get_ticket_data(12345))["channel"] == "facebook"
+
+
+@patch("zendesk_mcp.tools.ticket.get_client")
+def test_search_rejected_by_zendesk_raises_instead_of_returning_prose(mock_get_client):
+    mock_get_client.return_value.search.side_effect = Exception(
+        '{"error": "invalid", "description": "Invalid search: Error filtering on field: via_id"}')
+
+    from zendesk_mcp.tools.ticket import _search_tickets_data
+    with pytest.raises(ToolError, match="Zendesk API error.*Invalid search"):
+        _search_tickets_data(keywords="via:messenger", status=None, limit=5)

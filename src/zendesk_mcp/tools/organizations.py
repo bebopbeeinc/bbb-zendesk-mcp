@@ -2,13 +2,14 @@ import json
 from zendesk_mcp.client import get_oauth_session, ConfigError
 from zendesk_mcp import auth
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 
 def _get_organization_data(organization_id: int) -> str:
     try:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     url = f"https://{subdomain}.zendesk.com/api/v2/organizations/{organization_id}.json"
     try:
         response = auth.request("GET", url, timeout=30)
@@ -24,8 +25,8 @@ def _get_organization_data(organization_id: int) -> str:
         }, indent=2)
     except Exception as e:
         if "404" in str(e):
-            return f"Organization #{organization_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Organization #{organization_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_organization_tools(mcp) -> None:

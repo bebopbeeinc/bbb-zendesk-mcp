@@ -2,6 +2,8 @@ import json
 from zendesk_mcp.client import get_oauth_session, ConfigError
 from zendesk_mcp import auth
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
+from zendesk_mcp.tools.channel import ticket_channel
 
 _VALID_SORT_BY = {"created_at", "updated_at", "priority", "status"}
 _VALID_SORT_ORDER = {"asc", "desc"}
@@ -15,16 +17,16 @@ def _get_tickets_data(
     sort_order: str = "desc",
 ) -> str:
     if sort_by not in _VALID_SORT_BY:
-        return f"Invalid sort_by '{sort_by}'. Valid values: {', '.join(sorted(_VALID_SORT_BY))}"
+        raise ToolError(f"Invalid sort_by '{sort_by}'. Valid values: {', '.join(sorted(_VALID_SORT_BY))}")
     if sort_order not in _VALID_SORT_ORDER:
-        return f"Invalid sort_order '{sort_order}'. Valid values: {', '.join(sorted(_VALID_SORT_ORDER))}"
+        raise ToolError(f"Invalid sort_order '{sort_order}'. Valid values: {', '.join(sorted(_VALID_SORT_ORDER))}")
     per_page = max(1, min(per_page, _MAX_PER_PAGE))
     page = max(1, int(page))
 
     try:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
 
     url = f"https://{subdomain}.zendesk.com/api/v2/tickets.json"
     try:
@@ -37,7 +39,7 @@ def _get_tickets_data(
         response.raise_for_status()
         data = response.json()
     except Exception as e:
-        return api_error_message(e)
+        raise ToolError(api_error_message(e)) from e
 
     raw_tickets = data.get("tickets", [])
     tickets = [{
@@ -46,6 +48,7 @@ def _get_tickets_data(
         "status": t.get("status"),
         "priority": t.get("priority"),
         "description": t.get("description"),
+        "channel": ticket_channel(t),
         "created_at": t.get("created_at"),
         "updated_at": t.get("updated_at"),
         "requester_id": t.get("requester_id"),
@@ -74,5 +77,5 @@ def register_list_tickets_tools(mcp) -> None:
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> str:
-        """List Zendesk tickets with pagination. page: 1-based page number. per_page: max 100. sort_by: created_at, updated_at, priority, or status. sort_order: asc or desc. Returns tickets plus pagination metadata."""
+        """List Zendesk tickets with pagination. page: 1-based page number. per_page: max 100. sort_by: created_at, updated_at, priority, or status. sort_order: asc or desc. Returns tickets (with the channel each arrived on) plus pagination metadata."""
         return _get_tickets_data(page=page, per_page=per_page, sort_by=sort_by, sort_order=sort_order)

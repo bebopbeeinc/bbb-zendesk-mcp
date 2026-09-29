@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 @patch("zendesk_mcp.tools.organizations.auth.request")
@@ -34,19 +36,23 @@ def test_get_organization_returns_custom_fields(mock_oauth, mock_httpx_get):
 
 
 @patch("zendesk_mcp.tools.organizations.get_oauth_session")
-def test_get_organization_returns_config_error(mock_oauth):
+def test_get_organization_raises_config_error(mock_oauth):
     mock_oauth.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.organizations import _get_organization_data
-    result = _get_organization_data(1)
+    with pytest.raises(ToolError) as err:
+        _get_organization_data(1)
+    result = str(err.value)
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.organizations.auth.request")
 @patch("zendesk_mcp.tools.organizations.get_oauth_session")
-def test_get_organization_returns_not_found(mock_oauth, mock_httpx_get):
+def test_get_organization_raises_not_found(mock_oauth, mock_httpx_get):
     mock_oauth.return_value = ("acme", "tok")
     mock_httpx_get.side_effect = Exception("404 Not Found")
     from zendesk_mcp.tools.organizations import _get_organization_data
-    result = _get_organization_data(999)
+    with pytest.raises(ToolError) as err:
+        _get_organization_data(999)
+    result = str(err.value)
     assert "999" in result
     assert "not found" in result.lower()

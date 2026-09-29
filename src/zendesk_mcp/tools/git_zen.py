@@ -2,6 +2,7 @@ import json
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.config import load_config
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 _NOT_CONFIGURED_MESSAGE = (
     "Git-Zen field ID not configured. Set 'git_zen_field_id' in "
@@ -12,7 +13,7 @@ _NOT_CONFIGURED_MESSAGE = (
 def _get_git_zen_links_data(ticket_id: int) -> str:
     field_id = load_config().get("git_zen_field_id")
     if field_id is None:
-        return _NOT_CONFIGURED_MESSAGE
+        raise ToolError(_NOT_CONFIGURED_MESSAGE)
 
     try:
         client = get_client()
@@ -75,11 +76,11 @@ def _get_git_zen_links_data(ticket_id: int) -> str:
             "linked_commits": commits,
         }, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_git_zen_tools(mcp) -> None:

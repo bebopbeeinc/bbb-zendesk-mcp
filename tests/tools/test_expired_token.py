@@ -1,4 +1,4 @@
-"""End-to-end: an expired OAuth token must produce an actionable message, not an opaque 401.
+"""End-to-end: an expired OAuth token must produce an actionable error, not an opaque 401.
 
 Regression cover for the reported failure where the server "just stops working"
 once the Zendesk access token expires.
@@ -7,9 +7,11 @@ import json
 from unittest.mock import patch, MagicMock
 
 import httpx
+import pytest
 from zenpy.lib.exception import APIException
 
 from zendesk_mcp.auth import TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 EXPIRED_401 = {
     "error": "invalid_token",
@@ -29,7 +31,9 @@ def test_httpx_tool_reports_expired_token_actionably(mock_request):
     )
     from zendesk_mcp.tools.users import _search_users_data
 
-    result = _search_users_data("jane@customer.com")
+    with pytest.raises(ToolError) as err:
+        _search_users_data("jane@customer.com")
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
     assert "developer.mozilla.org" not in result
@@ -42,7 +46,9 @@ def test_zenpy_tool_reports_expired_token_actionably(mock_get_client):
     mock_get_client.return_value = client
     from zendesk_mcp.tools.ticket import _get_ticket_data
 
-    result = _get_ticket_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -54,7 +60,9 @@ def test_zenpy_tool_surfaces_unrefreshable_token(mock_get_client):
     )
     from zendesk_mcp.tools.ticket import _get_ticket_data
 
-    result = _get_ticket_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -66,7 +74,9 @@ def test_non_auth_errors_are_not_mislabelled_as_expiry(mock_get_client):
     mock_get_client.return_value = client
     from zendesk_mcp.tools.ticket import _get_ticket_data
 
-    result = _get_ticket_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" not in result
     assert "500" in result
@@ -79,7 +89,9 @@ def test_not_found_still_reported_as_not_found(mock_get_client):
     mock_get_client.return_value = client
     from zendesk_mcp.tools.ticket import _get_ticket_data
 
-    result = _get_ticket_data(999)
+    with pytest.raises(ToolError) as err:
+        _get_ticket_data(999)
+    result = str(err.value)
 
     assert "not found" in result.lower()
     assert "zendesk-mcp setup" not in result

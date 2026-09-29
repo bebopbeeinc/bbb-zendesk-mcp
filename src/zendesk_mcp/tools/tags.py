@@ -1,6 +1,7 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 
 def _add_tag_data(ticket_id: int, tag: str) -> str:
@@ -16,11 +17,11 @@ def _add_tag_data(ticket_id: int, tag: str) -> str:
         refreshed = client.tickets(id=ticket_id)
         return json.dumps({"ticket_id": ticket_id, "tags": list(getattr(refreshed, "tags", []) or [])}, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def _remove_tag_data(ticket_id: int, tag: str) -> str:
@@ -36,11 +37,11 @@ def _remove_tag_data(ticket_id: int, tag: str) -> str:
         refreshed = client.tickets(id=ticket_id)
         return json.dumps({"ticket_id": ticket_id, "tags": list(getattr(refreshed, "tags", []) or [])}, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_tag_tools(mcp) -> None:

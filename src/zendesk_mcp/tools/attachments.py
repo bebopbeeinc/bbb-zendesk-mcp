@@ -11,6 +11,7 @@ from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.config import attachment_cache_dir
 from zendesk_mcp import auth
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
 
 
 def _list_attachments_data(ticket_id: int) -> str:
@@ -29,11 +30,11 @@ def _list_attachments_data(ticket_id: int) -> str:
                 })
         return json.dumps(result, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 _TEXT_EXTENSIONS = {".log", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".sh", ".py", ".go", ".md"}
@@ -64,11 +65,7 @@ def _download_attachment_data(
         response.raise_for_status()
         dest.write_bytes(response.content)
     except Exception as e:
-        return json.dumps({
-            "type": "error",
-            "message": f"Download failed: {api_error_message(e)}",
-            "cached_path": str(dest),
-        })
+        raise ToolError(f"Download failed: {api_error_message(e)}") from e
 
     suffix = Path(filename).suffix.lower()
 
@@ -77,7 +74,7 @@ def _download_attachment_data(
             text = dest.read_text(errors="replace")
             return json.dumps({"type": "text", "content": text, "cached_path": str(dest)})
         except Exception as e:
-            return json.dumps({"type": "error", "message": str(e), "cached_path": str(dest)})
+            raise ToolError(f"{e} (the file is downloaded: cached_path {dest})") from e
 
     if suffix == ".zip":
         return _handle_zip(dest)
@@ -132,7 +129,7 @@ def _handle_zip(dest: Path) -> str:
                 zf.extract(member, unpack_dir)
         return _archive_summary(dest, unpack_dir)
     except zipfile.BadZipFile as e:
-        return json.dumps({"type": "error", "message": f"Failed to unpack zip: {e}", "cached_path": str(dest)})
+        raise ToolError(f"Failed to unpack zip: {e} (the file is downloaded: cached_path {dest})") from e
 
 
 def _handle_tar(dest: Path) -> str:
@@ -146,7 +143,7 @@ def _handle_tar(dest: Path) -> str:
             tf.extractall(unpack_dir, members=safe_members)
         return _archive_summary(dest, unpack_dir)
     except tarfile.TarError as e:
-        return json.dumps({"type": "error", "message": f"Failed to unpack tar: {e}", "cached_path": str(dest)})
+        raise ToolError(f"Failed to unpack tar: {e} (the file is downloaded: cached_path {dest})") from e
 
 
 def _handle_pdf(dest: Path) -> str:
@@ -172,7 +169,7 @@ def _handle_pdf(dest: Path) -> str:
             "truncated": truncated,
         })
     except Exception as e:
-        return json.dumps({"type": "error", "message": f"PDF text extraction failed: {e}", "cached_path": str(dest)})
+        raise ToolError(f"PDF text extraction failed: {e} (the file is downloaded: cached_path {dest})") from e
 
 
 def _handle_image(dest: Path) -> str:
@@ -189,7 +186,7 @@ def _handle_image(dest: Path) -> str:
             "cached_path": str(dest),
         })
     except Exception as e:
-        return json.dumps({"type": "error", "message": f"Image processing failed: {e}", "cached_path": str(dest)})
+        raise ToolError(f"Image processing failed: {e} (the file is downloaded: cached_path {dest})") from e
 
 
 def register_attachment_tools(mcp) -> None:

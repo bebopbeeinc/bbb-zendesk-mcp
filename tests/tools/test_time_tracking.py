@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 _FIELD_TOTAL = 30435145651479
 _FIELD_LAST = 30435145655959
@@ -63,11 +65,13 @@ def test_get_time_tracking_returns_zeros_when_no_time_logged(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.time_tracking.get_client")
-def test_get_time_tracking_returns_error_on_config_error(mock_get_client):
+def test_get_time_tracking_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.time_tracking import _get_time_tracking_data
-    result = _get_time_tracking_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_time_tracking_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -120,25 +124,29 @@ def test_log_time_starts_from_zero_when_no_existing_time(mock_get_client, mock_t
 
 
 @patch("zendesk_mcp.tools.time_tracking.get_client")
-def test_log_time_returns_error_on_config_error(mock_get_client):
+def test_log_time_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.time_tracking import _log_time_data
-    result = _log_time_data(12345, 600)
+    with pytest.raises(ToolError) as err:
+        _log_time_data(12345, 600)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.time_tracking.Ticket")
 @patch("zendesk_mcp.tools.time_tracking.get_client")
-def test_log_time_returns_error_on_ticket_not_found(mock_get_client, mock_ticket_cls):
+def test_log_time_raises_on_ticket_not_found(mock_get_client, mock_ticket_cls):
     mock_client = MagicMock()
     mock_client.tickets.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
     mock_ticket_cls.return_value = MagicMock()
 
     from zendesk_mcp.tools.time_tracking import _log_time_data
-    result = _log_time_data(99999, 600)
+    with pytest.raises(ToolError) as err:
+        _log_time_data(99999, 600)
+    result = str(err.value)
 
     assert "99999" in result
     assert "not found" in result.lower()
@@ -146,8 +154,12 @@ def test_log_time_returns_error_on_ticket_not_found(mock_get_client, mock_ticket
 
 def test_log_time_rejects_non_positive_seconds():
     from zendesk_mcp.tools.time_tracking import _log_time_data
-    result = _log_time_data(12345, 0)
+    with pytest.raises(ToolError) as err:
+        _log_time_data(12345, 0)
+    result = str(err.value)
     assert "positive" in result.lower()
 
-    result2 = _log_time_data(12345, -60)
+    with pytest.raises(ToolError) as err:
+        _log_time_data(12345, -60)
+    result2 = str(err.value)
     assert "positive" in result2.lower()

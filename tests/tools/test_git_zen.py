@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 _TEST_FIELD_ID = 999
 
@@ -82,37 +84,43 @@ def test_get_git_zen_links_returns_empty_when_no_field(mock_get_client, mock_loa
 
 @patch("zendesk_mcp.tools.git_zen.load_config")
 @patch("zendesk_mcp.tools.git_zen.get_client")
-def test_get_git_zen_links_returns_error_on_config_error(mock_get_client, mock_load_config):
+def test_get_git_zen_links_raises_on_config_error(mock_get_client, mock_load_config):
     mock_load_config.return_value = {"git_zen_field_id": _TEST_FIELD_ID}
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.git_zen import _get_git_zen_links_data
-    result = _get_git_zen_links_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_git_zen_links_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.git_zen.load_config")
 @patch("zendesk_mcp.tools.git_zen.get_client")
-def test_get_git_zen_links_returns_error_on_not_found(mock_get_client, mock_load_config):
+def test_get_git_zen_links_raises_on_not_found(mock_get_client, mock_load_config):
     mock_load_config.return_value = {"git_zen_field_id": _TEST_FIELD_ID}
     mock_client = MagicMock()
     mock_client.tickets.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
 
     from zendesk_mcp.tools.git_zen import _get_git_zen_links_data
-    result = _get_git_zen_links_data(99999)
+    with pytest.raises(ToolError) as err:
+        _get_git_zen_links_data(99999)
+    result = str(err.value)
 
     assert "99999" in result
     assert "not found" in result.lower()
 
 
 @patch("zendesk_mcp.tools.git_zen.load_config")
-def test_get_git_zen_links_returns_not_configured_message_when_field_id_unset(mock_load_config):
+def test_get_git_zen_links_raises_not_configured_when_field_id_unset(mock_load_config):
     mock_load_config.return_value = {}
 
     from zendesk_mcp.tools.git_zen import _get_git_zen_links_data
-    result = _get_git_zen_links_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_git_zen_links_data(12345)
+    result = str(err.value)
 
     assert "Git-Zen field ID not configured" in result
     assert "git_zen_field_id" in result

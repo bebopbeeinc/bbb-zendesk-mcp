@@ -1,6 +1,8 @@
+import pytest
 from unittest.mock import patch, MagicMock
 from tests.conftest import make_mock_ticket, make_mock_comment, make_mock_user
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _client_with_ticket_and_comments(ticket, comments):
@@ -46,11 +48,13 @@ def test_gitlab_context_includes_public_comments(mock_get_client, mock_load_conf
 
 
 @patch("zendesk_mcp.tools.gitlab_context.get_client")
-def test_gitlab_context_returns_error_on_config_error(mock_get_client):
+def test_gitlab_context_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.gitlab_context import _get_gitlab_context
-    result = _get_gitlab_context(12345)
+    with pytest.raises(ToolError) as err:
+        _get_gitlab_context(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
     assert not result.startswith("#")

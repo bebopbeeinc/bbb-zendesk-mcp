@@ -1,6 +1,8 @@
+import pytest
 import json
 from unittest.mock import patch, MagicMock, call
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _make_macro(macro_id: int, title: str, active: bool = True):
@@ -187,8 +189,10 @@ def test_apply_macro_comment_only_no_ticket_changes(mock_oauth, mock_httpx_get, 
 
 
 @patch("zendesk_mcp.tools.macros.get_client")
-def test_list_macros_returns_config_error(mock_get_client):
+def test_list_macros_raises_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.macros import _list_macros_data
-    result = _list_macros_data()
+    with pytest.raises(ToolError) as err:
+        _list_macros_data()
+    result = str(err.value)
     assert "zendesk-mcp setup" in result

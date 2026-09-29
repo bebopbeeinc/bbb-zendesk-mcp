@@ -1,7 +1,9 @@
+import pytest
 import json
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 # ---- set_ticket_status tests ----
@@ -28,7 +30,9 @@ def test_set_ticket_status_updates_ticket(mock_get_client, mock_ticket_cls):
 @patch("zendesk_mcp.tools.update_ticket.get_client")
 def test_set_ticket_status_rejects_invalid_status(mock_get_client):
     from zendesk_mcp.tools.update_ticket import _set_ticket_status_data
-    result = _set_ticket_status_data(12345, "banana")
+    with pytest.raises(ToolError) as err:
+        _set_ticket_status_data(12345, "banana")
+    result = str(err.value)
 
     mock_get_client.assert_not_called()
     assert "invalid" in result.lower()
@@ -36,25 +40,29 @@ def test_set_ticket_status_rejects_invalid_status(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_set_ticket_status_returns_error_on_config_error(mock_get_client):
+def test_set_ticket_status_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.update_ticket import _set_ticket_status_data
-    result = _set_ticket_status_data(12345, "open")
+    with pytest.raises(ToolError) as err:
+        _set_ticket_status_data(12345, "open")
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.update_ticket.Ticket")
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_set_ticket_status_returns_error_on_not_found(mock_get_client, mock_ticket_cls):
+def test_set_ticket_status_raises_on_not_found(mock_get_client, mock_ticket_cls):
     mock_client = MagicMock()
     mock_client.tickets.update.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
     mock_ticket_cls.return_value = MagicMock()
 
     from zendesk_mcp.tools.update_ticket import _set_ticket_status_data
-    result = _set_ticket_status_data(99999, "open")
+    with pytest.raises(ToolError) as err:
+        _set_ticket_status_data(99999, "open")
+    result = str(err.value)
 
     assert "99999" in result
     assert "not found" in result.lower()
@@ -113,13 +121,15 @@ def test_assign_ticket_to_me(mock_get_client, mock_ticket_cls):
 
 
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_assign_ticket_returns_error_when_user_not_found(mock_get_client):
+def test_assign_ticket_raises_when_user_not_found(mock_get_client):
     mock_client = MagicMock()
     mock_client.search.return_value = iter([])
     mock_get_client.return_value = mock_client
 
     from zendesk_mcp.tools.update_ticket import _assign_ticket_data
-    result = _assign_ticket_data(12345, "ghost@example.com")
+    with pytest.raises(ToolError) as err:
+        _assign_ticket_data(12345, "ghost@example.com")
+    result = str(err.value)
 
     assert "ghost@example.com" in result
     assert "not found" in result.lower()
@@ -127,11 +137,13 @@ def test_assign_ticket_returns_error_when_user_not_found(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_assign_ticket_returns_error_on_config_error(mock_get_client):
+def test_assign_ticket_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.update_ticket import _assign_ticket_data
-    result = _assign_ticket_data(12345, "alice@example.com")
+    with pytest.raises(ToolError) as err:
+        _assign_ticket_data(12345, "alice@example.com")
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -217,7 +229,9 @@ def test_update_ticket_skips_none_fields(mock_get_client):
 @patch("zendesk_mcp.tools.update_ticket.get_client")
 def test_update_ticket_rejects_no_fields(mock_get_client):
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=12345)
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=12345)
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "nothing to update" in result.lower()
 
@@ -225,7 +239,9 @@ def test_update_ticket_rejects_no_fields(mock_get_client):
 @patch("zendesk_mcp.tools.update_ticket.get_client")
 def test_update_ticket_rejects_invalid_status(mock_get_client):
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=12345, status="banana")
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=12345, status="banana")
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "invalid status" in result.lower()
     assert "banana" in result
@@ -234,7 +250,9 @@ def test_update_ticket_rejects_invalid_status(mock_get_client):
 @patch("zendesk_mcp.tools.update_ticket.get_client")
 def test_update_ticket_rejects_invalid_priority(mock_get_client):
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=12345, priority="banana")
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=12345, priority="banana")
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "invalid priority" in result.lower()
 
@@ -242,28 +260,34 @@ def test_update_ticket_rejects_invalid_priority(mock_get_client):
 @patch("zendesk_mcp.tools.update_ticket.get_client")
 def test_update_ticket_rejects_invalid_type(mock_get_client):
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=12345, type="banana")
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=12345, type="banana")
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "invalid type" in result.lower()
 
 
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_update_ticket_returns_error_on_not_found(mock_get_client):
+def test_update_ticket_raises_on_not_found(mock_get_client):
     mock_client = MagicMock()
     mock_client.tickets.side_effect = Exception("RecordNotFound: Couldn't find Ticket with id=99999")
     mock_get_client.return_value = mock_client
 
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=99999, status="open")
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=99999, status="open")
+    result = str(err.value)
     assert "99999" in result
     assert "not found" in result.lower()
 
 
 @patch("zendesk_mcp.tools.update_ticket.get_client")
-def test_update_ticket_returns_error_on_config_error(mock_get_client):
+def test_update_ticket_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.update_ticket import _update_ticket_data
-    result = _update_ticket_data(ticket_id=12345, status="open")
+    with pytest.raises(ToolError) as err:
+        _update_ticket_data(ticket_id=12345, status="open")
+    result = str(err.value)
     assert "zendesk-mcp setup" in result
 
 

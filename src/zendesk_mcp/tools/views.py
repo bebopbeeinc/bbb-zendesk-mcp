@@ -2,6 +2,8 @@ import json
 from zendesk_mcp.client import get_client, get_oauth_session, ConfigError
 from zendesk_mcp import auth
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
+from zendesk_mcp.tools.channel import ticket_channel
 
 
 def _list_views_data() -> str:
@@ -10,16 +12,16 @@ def _list_views_data() -> str:
         views = list(client.views.active())
         return json.dumps([{"id": v.id, "title": v.title} for v in views], indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return api_error_message(e)
+        raise ToolError(api_error_message(e)) from e
 
 
 def _get_view_data(view_id: int) -> str:
     try:
         subdomain, _ = get_oauth_session()
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     url = f"https://{subdomain}.zendesk.com/api/v2/views/{view_id}.json"
     try:
         response = auth.request("GET", url, timeout=30)
@@ -34,8 +36,8 @@ def _get_view_data(view_id: int) -> str:
         }, indent=2)
     except Exception as e:
         if "404" in str(e):
-            return f"View #{view_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"View #{view_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def _get_view_tickets_data(view_id: int) -> str:
@@ -51,16 +53,17 @@ def _get_view_tickets_data(view_id: int) -> str:
             "requester_id": t.requester_id,
             "organization_id": t.organization_id,
             "group_id": getattr(t, "group_id", None),
+            "channel": ticket_channel(t),
             "created_at": str(t.created_at),
             "updated_at": str(t.updated_at),
             "tags": list(getattr(t, "tags", []) or []),
         } for t in tickets], indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"View #{view_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"View #{view_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def register_view_tools(mcp) -> None:
@@ -76,5 +79,5 @@ def register_view_tools(mcp) -> None:
 
     @mcp.tool()
     def zendesk_get_view_tickets(view_id: int) -> str:
-        """Get the tickets currently matching a Zendesk view. Returns JSON array of tickets with essential fields."""
+        """Get the tickets currently matching a Zendesk view. Returns JSON array of tickets with essential fields, including the channel each arrived on."""
         return _get_view_tickets_data(view_id)

@@ -1,3 +1,4 @@
+import pytest
 import json
 import zipfile
 import tarfile
@@ -6,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from tests.conftest import make_mock_attachment, make_mock_comment
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _client_with_comments(comments):
@@ -44,11 +46,13 @@ def test_list_attachments_returns_empty_list_when_no_attachments(mock_get_client
 
 
 @patch("zendesk_mcp.tools.attachments.get_client")
-def test_list_attachments_returns_error_on_config_error(mock_get_client):
+def test_list_attachments_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.attachments import _list_attachments_data
-    result = _list_attachments_data(12345)
+    with pytest.raises(ToolError) as err:
+        _list_attachments_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
 
@@ -162,7 +166,7 @@ def test_download_image_returns_base64(mock_httpx_get, mock_cache_dir, tmp_path)
 
 @patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
 @patch("zendesk_mcp.tools.attachments.auth.request")
-def test_download_corrupt_zip_returns_error_not_exception(mock_httpx_get, mock_cache_dir, tmp_path):
+def test_download_corrupt_zip_raises_naming_the_cached_file(mock_httpx_get, mock_cache_dir, tmp_path):
     mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
     mock_httpx_get.return_value = MagicMock(
         content=b"this is not a zip",
@@ -170,11 +174,14 @@ def test_download_corrupt_zip_returns_error_not_exception(mock_httpx_get, mock_c
     )
 
     from zendesk_mcp.tools.attachments import _download_attachment_data
-    result = json.loads(_download_attachment_data("https://cdn.zendesk.com/bad.zip", "bad.zip", 12345))
+    with pytest.raises(ToolError) as err:
+        _download_attachment_data("https://cdn.zendesk.com/bad.zip", "bad.zip", 12345)
 
-    assert result["type"] == "error"
-    assert "unpack" in result["message"].lower() or "zip" in result["message"].lower()
-    assert "cached_path" in result
+    message = str(err.value)
+    assert "unpack zip" in message.lower()
+    # The download itself worked: the error says where the file is, so it can still be read.
+    assert "cached_path" in message
+    assert str(tmp_path / "attachments" / "12345" / "bad.zip") in message
 
 
 @patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
@@ -202,3 +209,14 @@ def test_download_tar_returns_file_tree(mock_httpx_get, mock_cache_dir, tmp_path
     assert "text_contents" not in result
     unpack_dir = Path(result["unpack_dir"])
     assert (unpack_dir / "readme.txt").read_text() == "hello from tar"
+
+
+@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
+@patch("zendesk_mcp.tools.attachments.auth.request")
+def test_download_failure_raises(mock_httpx_get, mock_cache_dir, tmp_path):
+    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
+    mock_httpx_get.side_effect = Exception("503 Service Unavailable")
+
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with pytest.raises(ToolError, match="Download failed: Zendesk API error: 503"):
+        _download_attachment_data("https://cdn.zendesk.com/x.log", "x.log", 12345)

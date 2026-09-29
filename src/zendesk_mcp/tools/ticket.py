@@ -1,6 +1,8 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.errors import ToolError
+from zendesk_mcp.tools.channel import ticket_channel
 
 
 def _search_tickets_data(keywords: str | None, status: str | None, limit: int) -> str:
@@ -29,15 +31,16 @@ def _search_tickets_data(keywords: str | None, status: str | None, limit: int) -
                     "name": ticket.assignee.name,
                     "email": ticket.assignee.email,
                 } if ticket.assignee else None,
+                "channel": ticket_channel(ticket),
                 "created_at": str(ticket.created_at),
                 "updated_at": str(ticket.updated_at),
                 "description": ticket.description[:300] if ticket.description else "",
             })
         return json.dumps(tickets, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return api_error_message(e)
+        raise ToolError(api_error_message(e)) from e
 
 
 def _get_ticket_data(ticket_id: int) -> str:
@@ -60,6 +63,7 @@ def _get_ticket_data(ticket_id: int) -> str:
             } if ticket.assignee else None,
             "group": ticket.group.name if ticket.group else None,
             "tags": ticket.tags,
+            "channel": ticket_channel(ticket),
             "created_at": str(ticket.created_at),
             "updated_at": str(ticket.updated_at),
             "description": ticket.description,
@@ -67,11 +71,11 @@ def _get_ticket_data(ticket_id: int) -> str:
             "ticket_url": f"https://{_get_subdomain()}.zendesk.com/agent/tickets/{ticket.id}",
         }, indent=2)
     except (ConfigError, TokenExpiredError) as e:
-        return str(e)
+        raise ToolError(str(e)) from e
     except Exception as e:
         if "RecordNotFound" in str(e) or "404" in str(e):
-            return f"Ticket #{ticket_id} not found or not accessible with current credentials."
-        return api_error_message(e)
+            raise ToolError(f"Ticket #{ticket_id} not found or not accessible with current credentials.") from e
+        raise ToolError(api_error_message(e)) from e
 
 
 def _get_subdomain() -> str:
@@ -82,10 +86,10 @@ def _get_subdomain() -> str:
 def register_ticket_tools(mcp) -> None:
     @mcp.tool()
     def zendesk_get_ticket(ticket_id: int) -> str:
-        """Get a Zendesk ticket by ID. Returns ticket fields including status, priority, requester, assignee, tags, description, and custom_fields (a list of {id, value} — this is where per-game metadata such as the player profile uid lives)."""
+        """Get a Zendesk ticket by ID. Returns ticket fields including status, priority, requester, assignee, tags, channel (the channel it arrived on: web, email, api, facebook, ...), description, and custom_fields (a list of {id, value} — this is where per-game metadata such as the player profile uid lives)."""
         return _get_ticket_data(ticket_id)
 
     @mcp.tool()
     def zendesk_search_tickets(keywords: str = "", status: str = "", limit: int = 50) -> str:
-        """Search Zendesk tickets by keyword and/or status. keywords: free-text search (e.g. 'login failure LDAP'). status: new, open, pending, hold, solved, closed — leave empty for all statuses. Returns id, subject, status, requester, assignee, and dates."""
+        """Search Zendesk tickets by keyword and/or status. keywords: free-text search (e.g. 'login failure LDAP'). status: new, open, pending, hold, solved, closed — leave empty for all statuses. Returns id, subject, status, requester, assignee, channel (the channel each ticket arrived on), and dates. A query Zendesk rejects is an error, not an empty list."""
         return _search_tickets_data(keywords or None, status or None, limit)

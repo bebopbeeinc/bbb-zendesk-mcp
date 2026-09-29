@@ -1,8 +1,10 @@
+import pytest
 import json
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 from tests.conftest import make_mock_comment, make_mock_attachment, make_mock_user
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _make_client_with_comments(comments):
@@ -45,11 +47,13 @@ def test_get_comments_includes_attachment_metadata(mock_get_client):
 
 
 @patch("zendesk_mcp.tools.comments.get_client")
-def test_get_comments_returns_error_on_config_error(mock_get_client):
+def test_get_comments_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
 
     from zendesk_mcp.tools.comments import _get_comments_data
-    result = _get_comments_data(12345)
+    with pytest.raises(ToolError) as err:
+        _get_comments_data(12345)
+    result = str(err.value)
 
     assert "zendesk-mcp setup" in result
     assert not result.startswith("[")

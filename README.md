@@ -83,7 +83,7 @@ Re-run `.venv/bin/python -m zendesk_mcp setup` when:
 - the refresh token expires (90 days with no use), or
 - you revoke the OAuth grant in Zendesk.
 
-In either case the tools return `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
+In either case the tools fail with `Zendesk authorization failed: ... Re-run: zendesk-mcp setup`
 rather than failing opaquely.
 
 ## Register with Claude Code
@@ -133,13 +133,23 @@ Write tools (`zendesk_post_comment`, `zendesk_post_internal_note`, `zendesk_set_
 
 ## Tools
 
+**A failure is an error, never an answer.** When Zendesk refuses a call — an invalid search, an
+expired token, a ticket that does not exist, a bad argument — the tool raises, and the client
+receives an error result (`isError: true`) carrying the message, e.g. `Zendesk API error:
+{"error": "invalid", "description": "Invalid search: ..."}`. A successful result is always the
+data the tool describes, so a caller can parse it without first checking whether it is prose.
+
+Every tool that returns tickets includes `channel`: the channel the ticket arrived on (Zendesk's
+`via.channel` — `web`, `email`, `api`, `facebook`, …), so a Messenger or Facebook ticket can be
+told apart without guessing search syntax.
+
 ### Tickets
 
 | Tool | What it does |
 |---|---|
-| `zendesk_search_tickets` | Search tickets by status, priority, type, assignee, requester, tags, or keyword |
-| `zendesk_get_tickets` | List tickets with pagination and sorting (page, per_page, sort_by, sort_order) |
-| `zendesk_get_ticket` | Get one ticket's metadata |
+| `zendesk_search_tickets` | Search tickets by status, priority, type, assignee, requester, tags, or keyword; each result carries its `channel`. A query Zendesk rejects is an error |
+| `zendesk_get_tickets` | List tickets with pagination and sorting (page, per_page, sort_by, sort_order), each with its `channel` |
+| `zendesk_get_ticket` | Get one ticket's metadata, including its `channel` |
 | `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields) |
 | `zendesk_update_ticket` | Update one or more fields on an existing ticket (status, priority, subject, type, assignee_id, requester_id, group_id, custom_status_id, tags, custom_fields, due_at) |
 | `zendesk_get_comments` | Get the conversation thread on a ticket |
@@ -164,7 +174,7 @@ Write tools (`zendesk_post_comment`, `zendesk_post_internal_note`, `zendesk_set_
 |---|---|
 | `zendesk_list_views` | List all active views |
 | `zendesk_get_view` | Get a view's filter conditions and execution settings |
-| `zendesk_get_view_tickets` | Fetch tickets currently matching a view |
+| `zendesk_get_view_tickets` | Fetch tickets currently matching a view, each with its `channel` |
 | `zendesk_list_macros` | List active macros with their actions |
 | `zendesk_preview_macro` | Preview what changes a macro would make |
 | `zendesk_apply_macro` | Apply a macro to a ticket (applies field changes and posts any comment) |
@@ -211,7 +221,7 @@ If your Zendesk instance uses the [Git-Zen](https://www.zendesk.com/marketplace/
 }
 ```
 
-Without this configured, `zendesk_get_git_zen_links` returns a "not configured" message.
+Without this configured, `zendesk_get_git_zen_links` fails with a "not configured" error.
 
 ## Optional: Help Center knowledge base
 

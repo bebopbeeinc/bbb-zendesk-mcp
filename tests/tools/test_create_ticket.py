@@ -1,7 +1,9 @@
+import pytest
 import json
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 from zendesk_mcp.client import ConfigError
+from zendesk_mcp.errors import ToolError
 
 
 def _make_refreshed_ticket():
@@ -67,7 +69,9 @@ def test_create_ticket_happy_path(mock_get_client, mock_ticket_cls):
 @patch("zendesk_mcp.tools.create_ticket.get_client")
 def test_create_ticket_rejects_invalid_priority(mock_get_client):
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    result = _create_ticket_data(subject="x", description="y", priority="banana")
+    with pytest.raises(ToolError) as err:
+        _create_ticket_data(subject="x", description="y", priority="banana")
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "invalid priority" in result.lower()
     assert "banana" in result
@@ -76,37 +80,43 @@ def test_create_ticket_rejects_invalid_priority(mock_get_client):
 @patch("zendesk_mcp.tools.create_ticket.get_client")
 def test_create_ticket_rejects_invalid_type(mock_get_client):
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    result = _create_ticket_data(subject="x", description="y", type="banana")
+    with pytest.raises(ToolError) as err:
+        _create_ticket_data(subject="x", description="y", type="banana")
+    result = str(err.value)
     mock_get_client.assert_not_called()
     assert "invalid type" in result.lower()
     assert "banana" in result
 
 
 @patch("zendesk_mcp.tools.create_ticket.get_client")
-def test_create_ticket_returns_error_on_config_error(mock_get_client):
+def test_create_ticket_raises_on_config_error(mock_get_client):
     mock_get_client.side_effect = ConfigError("Zendesk not configured. Run: zendesk-mcp setup")
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    result = _create_ticket_data(subject="x", description="y")
+    with pytest.raises(ToolError) as err:
+        _create_ticket_data(subject="x", description="y")
+    result = str(err.value)
     assert "zendesk-mcp setup" in result
 
 
 @patch("zendesk_mcp.tools.create_ticket.ZenpyTicket")
 @patch("zendesk_mcp.tools.create_ticket.get_client")
-def test_create_ticket_returns_generic_error_on_api_failure(mock_get_client, mock_ticket_cls):
+def test_create_ticket_raises_generic_error_on_api_failure(mock_get_client, mock_ticket_cls):
     mock_client = MagicMock()
     mock_client.tickets.create.side_effect = Exception("kaboom")
     mock_get_client.return_value = mock_client
     mock_ticket_cls.return_value = MagicMock()
 
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    result = _create_ticket_data(subject="x", description="y")
+    with pytest.raises(ToolError) as err:
+        _create_ticket_data(subject="x", description="y")
+    result = str(err.value)
     assert "Zendesk API error" in result
     assert "kaboom" in result
 
 
 @patch("zendesk_mcp.tools.create_ticket.ZenpyTicket")
 @patch("zendesk_mcp.tools.create_ticket.get_client")
-def test_create_ticket_returns_error_when_audit_lacks_ticket(mock_get_client, mock_ticket_cls):
+def test_create_ticket_raises_when_audit_lacks_ticket(mock_get_client, mock_ticket_cls):
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_ticket_cls.return_value = MagicMock()
@@ -116,7 +126,9 @@ def test_create_ticket_returns_error_when_audit_lacks_ticket(mock_get_client, mo
     mock_client.tickets.create.return_value = audit
 
     from zendesk_mcp.tools.create_ticket import _create_ticket_data
-    result = _create_ticket_data(subject="x", description="y")
+    with pytest.raises(ToolError) as err:
+        _create_ticket_data(subject="x", description="y")
+    result = str(err.value)
 
     assert "could not be determined" in result.lower()
     mock_client.tickets.assert_not_called()
