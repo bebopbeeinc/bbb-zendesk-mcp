@@ -1,12 +1,15 @@
 import json
 from zendesk_mcp.client import get_client, ConfigError
 from zendesk_mcp.auth import api_error_message, is_auth_error, TokenExpiredError
+from zendesk_mcp.config import load_config
 from zendesk_mcp.errors import ToolError
+from zendesk_mcp.transcript_uploads import parse_transcript_uploads
 
 
 def _get_comments_data(ticket_id: int) -> str:
     try:
         client = get_client()
+        subdomain = load_config().get("subdomain", "")
         comments = client.tickets.comments(ticket_id)
         result = []
         for comment in comments:
@@ -43,6 +46,8 @@ def _get_comments_data(ticket_id: int) -> str:
                 "is_public": comment.public,
                 "body": comment.body,
                 "attachments": attachments,
+                # Files sent through Zendesk Messaging: in the transcript body, not attachments.
+                "transcript_uploads": parse_transcript_uploads(comment.body, subdomain),
             })
         return json.dumps(result, indent=2)
     except (ConfigError, TokenExpiredError) as e:
@@ -56,5 +61,5 @@ def _get_comments_data(ticket_id: int) -> str:
 def register_comments_tools(mcp) -> None:
     @mcp.tool()
     def zendesk_get_comments(ticket_id: int) -> str:
-        """Get all comments (public replies and internal notes) for a Zendesk ticket. Includes attachment metadata but does not download files."""
+        """Get all comments (public replies and internal notes) for a Zendesk ticket. Includes attachment metadata but does not download files. Files sent through Zendesk Messaging (Messenger, in-app chat) are not attachments: each comment's transcript_uploads lists them (file_name, url, content_type, size, time, uploaded_by), and zendesk_download_attachment fetches the url."""
         return _get_comments_data(ticket_id)
