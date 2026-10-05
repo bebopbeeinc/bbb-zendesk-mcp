@@ -13,6 +13,11 @@ The URL is on the account host and redirects to a signed download, so
 zendesk_download_attachment can fetch it like any other attachment. Only URLs on the
 configured Zendesk origin under ``/sc/attachments/`` are reported; anything else in a body
 is text a player could have typed, and is ignored.
+
+Every line is a player's text, so nothing here may cost more than linear time in it: Python's
+``re`` holds the GIL while it matches, and a backtracking pattern over a long run of spaces
+stalls the whole server, not only the call. The lines are stripped and split in Python, and
+each pattern left starts at a literal and has a single quantifier, so none can backtrack.
 """
 import re
 from urllib.parse import unquote, urlparse
@@ -21,13 +26,14 @@ from zendesk_mcp.auth import validate_zendesk_url
 
 UPLOAD_PATH_PREFIX = "/sc/attachments/"
 
-# "(12:01:36) Player One uploaded: photo.jpeg". The time and the uploader are optional, so a
-# block whose header lacks either still parses; neither is ever filled in when absent.
-_HEADER_RE = re.compile(
-    r"^\s*(?:\(\s*(?P<time>[^()]*?)\s*\)\s*)?(?P<who>.*?)\s*\buploaded\s*:\s*(?P<file>.*?)\s*$",
-    re.IGNORECASE,
-)
-_FIELD_RE = re.compile(r"^\s*(?P<key>url|type|size)\s*:\s*(?P<value>.*?)\s*$", re.IGNORECASE)
+# "uploaded:" as a word; the first one on a line splits it into "(time) who" and the file.
+_UPLOADED_RE = re.compile(r"\buploaded\s*:", re.IGNORECASE)
+# "(12:01:36)" at the start of the uploader part. No nested parentheses, as before.
+_TIME_RE = re.compile(r"\(([^()]*)\)")
+_FIELDS = ("url", "type", "size")
+# A byte count. Longer than this is not a file Zendesk took, and int() of an unbounded digit
+# string is itself an error (sys.int_info.default_max_str_digits).
+_SIZE_RE = re.compile(r"[0-9]{1,15}")
 
 
 def is_transcript_upload_url(url: str, subdomain: str) -> bool:
@@ -42,24 +48,56 @@ def is_transcript_upload_url(url: str, subdomain: str) -> bool:
     if not path.startswith(UPLOAD_PATH_PREFIX):
         return False
     # "/sc/attachments/../api/v2/..." starts with the prefix but is normalised elsewhere.
-    return not any(segment in (".", "..") for segment in unquote(path).split("/"))
+    return not has_dot_segment(path)
 
 
-def _record(header: re.Match, fields: dict, subdomain: str) -> dict | None:
+def has_dot_segment(path: str) -> bool:
+    """True when a URL path holds a "." or ".." segment, percent-encoded or not."""
+    return any(segment in (".", "..") for segment in unquote(path).split("/"))
+
+
+def _header(line: str) -> dict | None:
+    """``{time, who, file}`` of an "(time) who uploaded: file" line, else None."""
+    if "uploaded" not in line.lower():
+        return None
+    line = line.strip()
+    marker = _UPLOADED_RE.search(line)
+    if not marker:
+        return None
+    who = line[:marker.start()].strip()
+    time = None
+    stamp = _TIME_RE.match(who)
+    if stamp:
+        time = stamp.group(1).strip()
+        who = who[stamp.end():].strip()
+    return {"time": time, "who": who, "file": line[marker.end():].strip()}
+
+
+def _field(line: str) -> tuple[str, str] | None:
+    """``(key, value)`` of a "URL: ..." / "Type: ..." / "Size: ..." line, else None."""
+    key, colon, value = line.strip().partition(":")
+    key = key.strip().lower()
+    if not colon or key not in _FIELDS:
+        return None
+    return key, value.strip()
+
+
+def _record(header: dict, fields: dict, subdomain: str) -> dict | None:
     tokens = fields.get("url", "").split()
     url = tokens[0].strip("<>") if tokens else ""
     if not url or not is_transcript_upload_url(url, subdomain):
         return None
 
     size_text = fields.get("size", "").replace(",", "")
-    file_name = header.group("file") or unquote(urlparse(url).path.rsplit("/", 1)[-1]) or None
+    file_name = header["file"] or unquote(urlparse(url).path.rsplit("/", 1)[-1]) or None
     return {
         "file_name": file_name,
         "url": url,
         "content_type": fields.get("type") or None,
-        "size": int(size_text) if size_text.isdigit() else None,
-        "time": header.group("time") or None,
-        "uploaded_by": header.group("who") or None,
+        # ASCII digits only: str.isdigit() also passes "²", which int() rejects.
+        "size": int(size_text) if _SIZE_RE.fullmatch(size_text) else None,
+        "time": header["time"] or None,
+        "uploaded_by": header["who"] or None,
     }
 
 
@@ -76,7 +114,7 @@ def parse_transcript_uploads(body, subdomain: str) -> list[dict]:
     uploads = []
     i = 0
     while i < len(lines):
-        header = _HEADER_RE.match(lines[i])
+        header = _header(lines[i])
         i += 1
         if not header:
             continue
@@ -88,10 +126,10 @@ def parse_transcript_uploads(body, subdomain: str) -> list[dict]:
                     break
                 i += 1
                 continue
-            field = _FIELD_RE.match(line)
-            if not field or field.group("key").lower() in fields:
+            field = _field(line)
+            if not field or field[0] in fields:
                 break
-            fields[field.group("key").lower()] = field.group("value")
+            fields[field[0]] = field[1]
             i += 1
         record = _record(header, fields, subdomain)
         if record:

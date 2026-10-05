@@ -1,8 +1,11 @@
-"""ZENDESK_MCP_ATTACHMENT_ROOT: every attachment write stays inside one directory.
+"""ZENDESK_MCP_ATTACHMENT_ROOT: every attachment write stays inside one directory, and only
+attachments are fetched.
 
 Unset, downloads go where they always have. Set, the default location is <root>/<ticket_id>,
 and the download directory, the file, and any archive's unpack directory must resolve
-(symlinks resolved) inside the root, or the call is refused before anything is fetched.
+(symlinks resolved) inside the root, or the call is refused before anything is fetched; the URL
+must be an attachment's or a Messaging upload's on the account host, and the bearer token goes
+to that first hop only.
 """
 import io
 import json
@@ -12,10 +15,18 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from zendesk_mcp.config import ATTACHMENT_ROOT_ENV, attachment_cache_dir
 from zendesk_mcp.errors import ToolError
+
+
+@pytest.fixture(autouse=True)
+def _account():
+    """The configured account: a confined download only fetches addresses on its host."""
+    with patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"}):
+        yield
 
 
 @pytest.fixture
@@ -185,3 +196,125 @@ def test_a_tar_link_member_cannot_carry_a_write_outside_the_root(root, outside, 
     assert not (unpack_dir / "escape").is_symlink()
     assert (unpack_dir / "readme.txt").read_text() == "hi"
     assert result["unpack_dir"] == str(unpack_dir)
+
+
+# --- set: what is fetched -----------------------------------------------------------------
+#
+# The bearer token reaches every path on the account host, /api/v2 included, and the caller
+# chooses attachment_url. Confined, only an attachment's own address is fetched, and the token
+# goes to that first hop alone.
+
+_UPLOAD = "https://example.zendesk.com/sc/attachments/v2/01CONV/IMG_0001.jpeg"
+_TOKEN_URL = "https://example.zendesk.com/attachments/token/TESTtoken/?name=IMG_0002.png"
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.zendesk.com/api/v2/users/search.json?query=role:end-user",
+    "https://example.zendesk.com/api/v2/users.json",
+    "https://example.zendesk.com/sc/attachments/../api/v2/users.json",
+    "https://example.zendesk.com/sc/attachments/%2e%2e/api/v2/users.json",
+    "https://example.zendesk.com/sc/attachments/v2/%2E%2E/%2E%2E/api/v2/users.json",
+    "https://example.zendesk.com/sc/attachments\\..\\..\\api/v2/users.json",
+    "https://example.zendesk.com/attachments/12345/a.png",
+    "https://example.zendesk.com//sc/attachments/v2/X/a.jpeg",
+    "https://other.zendesk.com/sc/attachments/v2/X/a.jpeg",
+    "http://example.zendesk.com/sc/attachments/v2/X/a.jpeg",
+    "https://p23.zdusercontent.com/attachment/1/a.jpeg",
+], ids=["users-search", "users", "dot-dot", "encoded-dot-dot", "encoded-upper", "backslash",
+        "attachment-id", "double-slash", "other-account", "http", "signed-host"])
+def test_a_non_attachment_address_is_refused_before_anything_is_fetched(root, fetch, url):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with pytest.raises(ToolError, match="Refusing to fetch attachment_url"):
+        _download_attachment_data(url, "u.json", 8838)
+    fetch.assert_not_called()
+    assert not (root / "8838" / "u.json").exists()
+
+
+@pytest.mark.parametrize("url", [_UPLOAD, _TOKEN_URL])
+def test_an_attachment_address_is_fetched(root, fetch, url):
+    fetch.return_value = MagicMock(content=b"hello", raise_for_status=lambda: None)
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    result = json.loads(_download_attachment_data(url, "notes.txt", 8838))
+    assert result["content"] == "hello"
+    fetch.assert_called_once()
+    assert fetch.call_args.args[1] == url
+    # Redirects are followed by hand, never by the authenticated client.
+    assert fetch.call_args.kwargs["follow_redirects"] is False
+
+
+def test_unset_any_url_on_the_account_is_fetched_as_before(fetch, tmp_path):
+    # Interactive use: nothing confined, so nothing about the address is checked here.
+    fetch.return_value = MagicMock(content=b'{"users": []}', raise_for_status=lambda: None)
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    url = "https://example.zendesk.com/api/v2/users.json"
+    result = json.loads(_download_attachment_data(url, "u.json", 8838, str(tmp_path / "anywhere")))
+    assert result["content"] == '{"users": []}'
+    assert fetch.call_args.args[1] == url
+    assert fetch.call_args.kwargs["follow_redirects"] is True
+
+
+class _Web:
+    """httpx.request, faked: answers by URL and records (url, Authorization) for every hop."""
+
+    def __init__(self, pages):
+        self.pages, self.hops = pages, []
+
+    def __call__(self, method, url, headers=None, **kwargs):
+        url = str(url)
+        self.hops.append((url, (headers or {}).get("Authorization")))
+        status, extra, body = self.pages[url]
+        return httpx.Response(status, headers=extra, content=body, request=httpx.Request(method, url))
+
+
+@pytest.fixture
+def web(tmp_path):
+    """The account's config and the network, faked; a test fills in ``web.pages``."""
+    config = {"subdomain": "example", "oauth_token": "tok-SECRET"}
+    fake = _Web({})
+    with patch("zendesk_mcp.auth.load_config", return_value=config), \
+            patch("httpx.request", side_effect=fake):
+        yield fake
+
+
+_SIGNED = "https://p23.zdusercontent.com/attachment/1/IMG_0001.jpeg?token=signed"
+
+
+def test_the_token_goes_to_the_first_hop_only(root, web):
+    web.pages = {
+        _UPLOAD: (302, {"Location": _SIGNED}, b""),
+        _SIGNED: (200, {}, b"hello"),
+    }
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    result = json.loads(_download_attachment_data(_UPLOAD, "notes.txt", 8838))
+    assert result["content"] == "hello"
+    assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (_SIGNED, None)]
+
+
+def test_a_redirect_back_onto_the_account_carries_no_token(root, web):
+    api = "https://example.zendesk.com/api/v2/users.json"
+    web.pages = {
+        _UPLOAD: (302, {"Location": "/api/v2/users.json"}, b""),
+        api: (401, {}, b'{"error": "Couldn\'t authenticate you"}'),
+    }
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with pytest.raises(ToolError, match="Download failed"):
+        _download_attachment_data(_UPLOAD, "u.json", 8838)
+    assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (api, None)]
+    assert not (root / "8838" / "u.json").exists()
+
+
+def test_a_redirect_off_https_is_refused(root, web):
+    plain = "http://p23.zdusercontent.com/attachment/1/a.jpeg"
+    web.pages = {_UPLOAD: (302, {"Location": plain}, b"")}
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with pytest.raises(ToolError, match="not https"):
+        _download_attachment_data(_UPLOAD, "a.txt", 8838)
+    assert [url for url, _ in web.hops] == [_UPLOAD]
+
+
+def test_a_redirect_loop_is_refused(root, web):
+    loop = "https://p23.zdusercontent.com/loop"
+    web.pages = {_UPLOAD: (302, {"Location": loop}, b""), loop: (302, {"Location": loop}, b"")}
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with pytest.raises(ToolError, match="redirects"):
+        _download_attachment_data(_UPLOAD, "a.txt", 8838)

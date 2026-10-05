@@ -6,7 +6,9 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import unquote, urlparse
 
+import httpx
 import pdfplumber
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, ImageOps
@@ -20,9 +22,9 @@ from zendesk_mcp.config import (
     load_config,
 )
 from zendesk_mcp import auth
-from zendesk_mcp.auth import api_error_message, TokenExpiredError
+from zendesk_mcp.auth import api_error_message, TokenExpiredError, validate_zendesk_url
 from zendesk_mcp.errors import ToolError
-from zendesk_mcp.transcript_uploads import parse_transcript_uploads
+from zendesk_mcp.transcript_uploads import has_dot_segment, parse_transcript_uploads
 
 
 def _list_attachments_data(ticket_id: int) -> str:
@@ -72,6 +74,49 @@ _PDF_TEXT_CAP_BYTES = 500_000
 _PREVIEW_MAX_EDGE = 1568
 _PREVIEW_MAX_BYTES = 500_000
 _PREVIEW_JPEG_QUALITIES = (85, 75, 65, 50)
+# Pixels decoded to make a preview, at most. A phone or desktop screenshot is well under 25
+# million; a camera photo is a JPEG and is decoded at 1/2 to 1/8 scale before this is checked.
+# Pillow refuses only above ~179 million (it warns from ~89), and a small PNG can say that much.
+_PREVIEW_MAX_PIXELS = 40_000_000
+# Modes thumbnail() resamples properly. Anything else (palette, 16-bit, CMYK, ...) is converted
+# first: resize() falls back to nearest-neighbour for "P" and averages palette indices for "PA".
+_RESAMPLABLE_MODES = ("RGB", "RGBA", "L", "LA")
+
+# With ZENDESK_MCP_ATTACHMENT_ROOT set, the only paths a download may fetch on the account host:
+# a comment attachment's content_url and a Messaging upload's URL. The bearer token reaches any
+# path on that host, /api/v2 included, so in that mode the address is checked, not trusted.
+_ATTACHMENT_PATH_PREFIXES = ("/attachments/token/", "/sc/attachments/")
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+_MAX_REDIRECTS = 5
+
+
+def _is_attachment_address(url: str, subdomain: str) -> bool:
+    """True for an attachment or Messaging upload URL on the configured Zendesk origin."""
+    try:
+        validate_zendesk_url(url, subdomain)
+    except ValueError:
+        return False
+    path = urlparse(url).path
+    if not path.startswith(_ATTACHMENT_PATH_PREFIXES):
+        return False
+    # "/sc/attachments/../api/v2/..." starts with the prefix; httpx would send "/sc/api/v2/...",
+    # and a server may read "%2e%2e" or a backslash the same way.
+    return not has_dot_segment(path) and "\\" not in unquote(path)
+
+
+def _fetch_confined(url: str) -> httpx.Response:
+    """GET an attachment, following redirects by hand: the bearer token goes to the first,
+    validated hop only, and every later hop must stay on https."""
+    response = auth.request("GET", url, follow_redirects=False)
+    for _ in range(_MAX_REDIRECTS):
+        if response.status_code not in _REDIRECT_STATUSES or not response.headers.get("location"):
+            return response
+        location = response.headers["location"]
+        target = response.url.join(location)
+        if target.scheme != "https":
+            raise ToolError(f"Download failed: redirected to a {target.scheme} URL, not https")
+        response = httpx.request("GET", target, follow_redirects=False, timeout=30)
+    raise ToolError(f"Download failed: more than {_MAX_REDIRECTS} redirects")
 
 
 def _confine(path: Path, root: Path | None, what: str) -> None:
@@ -102,6 +147,19 @@ def _download_attachment_data(
         raise ToolError(str(e)) from e
     except Exception as e:
         raise ToolError(f"Cannot create the download directory: {e}") from e
+    if root is not None:
+        # Confined mode fetches attachments and nothing else, checked before anything is fetched.
+        try:
+            subdomain = load_config().get("subdomain", "")
+        except Exception as e:
+            raise ToolError(f"Cannot read the Zendesk config: {e}") from e
+        if not _is_attachment_address(attachment_url, subdomain):
+            raise ToolError(
+                f"Refusing to fetch attachment_url: with {ATTACHMENT_ROOT_ENV} set, only an "
+                "attachment's address on the configured Zendesk host is fetched (a path under "
+                f"{' or '.join(_ATTACHMENT_PATH_PREFIXES)}, as zendesk_get_comments and "
+                "zendesk_list_attachments give it)"
+            )
     _confine(target_dir, root, "the download directory")
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -114,8 +172,13 @@ def _download_attachment_data(
     _confine(dest, root, "the download")
 
     try:
-        response = auth.request("GET", attachment_url, follow_redirects=True)
+        if root is not None:
+            response = _fetch_confined(attachment_url)
+        else:
+            response = auth.request("GET", attachment_url, follow_redirects=True)
         response.raise_for_status()
+    except ToolError:
+        raise
     except Exception as e:
         raise ToolError(f"Download failed: {api_error_message(e)}") from e
     try:
@@ -246,19 +309,41 @@ def _encode(img: Image.Image, fmt: str, **params) -> bytes:
     return buf.getvalue()
 
 
+def _fit(size: tuple[int, int]) -> tuple[int, int]:
+    """``size`` scaled down, aspect kept, so its long edge is at most _PREVIEW_MAX_EDGE."""
+    width, height = size
+    scale = min(1.0, _PREVIEW_MAX_EDGE / max(width, height, 1))
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def _image_preview(img: Image.Image) -> tuple[bytes, str, tuple[int, int]]:
     """A copy the model can see: upright, long edge <= _PREVIEW_MAX_EDGE, under the byte budget.
 
     PNG when the picture has transparency and fits the budget, otherwise JPEG; a copy that
     still does not fit is stepped down in quality, then in size.
+
+    The image is shrunk before it is rotated or converted: doing those to the full-size frame
+    first held three copies of it at once. Peak memory is now about the decoded size (twice
+    that for RGBA), within _PREVIEW_MAX_PIXELS.
     """
     transparent = img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info
+    # A JPEG decodes straight to the smallest 1/2, 1/4 or 1/8 scale still at least this size;
+    # other formats ignore it.
+    img.draft("RGB", _fit(img.size))
+    if img.width * img.height > _PREVIEW_MAX_PIXELS:
+        raise ValueError(
+            f"{img.width}x{img.height} is more than {_PREVIEW_MAX_PIXELS:,} pixels to decode; "
+            "no preview made"
+        )
+    if img.mode not in _RESAMPLABLE_MODES or "transparency" in img.info:
+        # Resampled as it is, a palette or a transparent colour key would not survive.
+        img = img.convert("RGBA" if transparent else "RGB")
+    img.thumbnail((_PREVIEW_MAX_EDGE, _PREVIEW_MAX_EDGE), Image.Resampling.LANCZOS)
     frame = ImageOps.exif_transpose(img).convert("RGBA" if transparent else "RGB")
     if transparent and frame.getchannel("A").getextrema()[0] == 255:
         # An alpha channel with nothing see-through in it (most RGBA screenshots).
         transparent = False
         frame = frame.convert("RGB")
-    frame.thumbnail((_PREVIEW_MAX_EDGE, _PREVIEW_MAX_EDGE), Image.Resampling.LANCZOS)
     while True:
         if transparent:
             data = _encode(frame, "PNG")

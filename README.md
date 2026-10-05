@@ -255,6 +255,10 @@ under 500 KB — and a short JSON text block: `cached_path` (the original, saved
 Up to 0.1.4 the image came back as base64 inside the JSON text, which at a few hundred KB
 overflowed the client's tool-output limit. Other file types are returned as before.
 
+The preview is made from a shrunk copy: a JPEG is decoded at 1/2 to 1/8 scale, and nothing is
+rotated or converted at full size. An image that would still decode to more than 40 million
+pixels gets no preview; the error names its `cached_path`, where the original is saved.
+
 ## Where downloads are saved
 
 `zendesk_download_attachment` saves to `dest_dir` when given, otherwise to
@@ -262,13 +266,20 @@ overflowed the client's tool-output limit. Other file types are returned as befo
 the config file). Archives are unpacked next to the file.
 
 Set `ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to confine every attachment write
-— the download and anything unpacked from an archive — to it:
+— the download and anything unpacked from an archive — to it, and the download to attachments:
 
 - the default location becomes `<root>/<ticket_id>`, whatever the config file says;
 - a `dest_dir`, a file, or an unpack directory whose real path (symlinks resolved) is outside
   the root is refused with an error; the directory and the file are checked before anything
   is fetched;
 - link members of a tar archive are not extracted;
+- only an attachment's own address is fetched: `attachment_url` must be on the configured
+  `https://<subdomain>.zendesk.com` under `/attachments/token/` (a comment attachment's
+  `content_url`) or `/sc/attachments/` (a [Messaging upload](#messaging-uploads)), with no
+  `.`/`..` segment, or the call is refused before anything is fetched — the OAuth token reaches
+  every path on that host, `/api/v2` included;
+- redirects are followed by hand: the token goes to that first request only, and every later
+  hop must be `https`;
 - set but blank or relative is an error, never treated as unset.
 
 Unset, nothing changes. The credentials file is not an attachment and is not affected.

@@ -4,6 +4,11 @@ A picture sent over Facebook Messenger or the in-app chat is not a comment attac
 transcript body names it in a "<who> uploaded: <file>" block. Only URLs on the configured
 Zendesk origin under /sc/attachments/ come out; everything else is text a player could type.
 """
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 from tests.conftest import IN_GAME_TRANSCRIPT, MESSENGER_TRANSCRIPT
@@ -89,9 +94,17 @@ def test_a_header_without_a_file_name_falls_back_to_the_url_file():
     assert upload["file_name"] == "c d.png"
 
 
-def test_unparseable_size_is_none():
-    body = f"(12:01:36) P uploaded: a.jpeg\nURL: {BASE}/a.jpeg\nSize: big\n"
-    assert parse_transcript_uploads(body, "example")[0]["size"] is None
+@pytest.mark.parametrize("size", [
+    "big",
+    "\u00b2",              # str.isdigit() is True for it; int() is not
+    "\u0661\u0662",        # Arabic-Indic digits: int() takes them, a byte count is not written so
+    "9" * 5000,            # past int()'s max-str-digits limit
+], ids=["word", "superscript", "arabic-indic", "5000-digits"])
+def test_unparseable_size_is_none(size):
+    body = f"(12:01:36) P uploaded: a.jpeg\nURL: {BASE}/a.jpeg\nSize: {size}\n"
+    [upload] = parse_transcript_uploads(body, "example")
+    assert upload["size"] is None
+    assert upload["url"] == f"{BASE}/a.jpeg"
 
 
 def test_url_in_angle_brackets_is_accepted():
@@ -155,3 +168,45 @@ def test_a_second_url_line_ends_the_block():
         f"URL: {BASE}/b.jpeg\n"
     )
     assert [u["url"] for u in parse_transcript_uploads(body, "example")] == [f"{BASE}/a.jpeg"]
+
+
+# Every line is a player's text. The header pattern this replaced backtracked cubically on a
+# line led by a long run of whitespace (1,000 spaces: 1.2 s; 4,000: 75 s), holding the GIL the
+# whole time, so the server stalled with the call. Run in a child process: a regression hangs
+# there for minutes, and the timeout turns that into a failure instead of a stuck suite.
+_LONG = 10_000
+_SLOW_SHAPES = {
+    "spaces": " " * _LONG + "x",
+    "tabs": "\t" * _LONG + "x",
+    "nbsp": "\u00a0" * _LONG + "x",
+    "whitespace only": " " * _LONG,
+    "whitespace-led header": " " * _LONG + "Player One uploaded: a.jpeg",
+    "whitespace-led time": "(" + " " * _LONG + "12:01:36) P uploaded: a.jpeg",
+    "uploaded then whitespace": "P uploaded" + " " * _LONG + "x",
+    "field": "URL: a" + " " * _LONG + "b",
+}
+_TIMING_SCRIPT = """
+import json, sys, time
+from zendesk_mcp.transcript_uploads import parse_transcript_uploads
+shapes = json.loads(sys.stdin.read())
+out = {}
+for name, line in shapes.items():
+    body = "(12:00:58) Player One: I uploaded: it\\n" + line + "\\nURL: https://example.zendesk.com/sc/attachments/v2/X/a.jpeg\\n"
+    start = time.perf_counter()
+    parse_transcript_uploads(body, "example")
+    out[name] = time.perf_counter() - start
+print(json.dumps(out))
+"""
+
+
+def test_long_whitespace_lines_parse_in_linear_time():
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    done = subprocess.run(
+        [sys.executable, "-c", _TIMING_SCRIPT], input=json.dumps(_SLOW_SHAPES),
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert done.returncode == 0, done.stderr
+    seconds = json.loads(done.stdout)
+    assert set(seconds) == set(_SLOW_SHAPES)
+    slow = {name: s for name, s in seconds.items() if s > 0.25}
+    assert not slow, slow

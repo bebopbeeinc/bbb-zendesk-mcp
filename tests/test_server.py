@@ -118,7 +118,8 @@ def _download_through_the_sdk(srv, tmp_path, monkeypatch, filename, content):
 
     async def call():
         with patch("zendesk_mcp.tools.attachments.auth.request",
-                   return_value=MagicMock(content=content, raise_for_status=lambda: None)):
+                   return_value=MagicMock(content=content, raise_for_status=lambda: None)), \
+                patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"}):
             return await _call_tool(srv, "zendesk_download_attachment", {
                 "attachment_url": f"https://example.zendesk.com/sc/attachments/v2/c/{filename}",
                 "filename": filename,

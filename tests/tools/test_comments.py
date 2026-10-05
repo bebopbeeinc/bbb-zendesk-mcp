@@ -95,3 +95,20 @@ def test_get_comments_transcript_uploads_is_empty_without_uploads(mock_get_clien
 
     assert result["transcript_uploads"] == []
     assert len(result["attachments"]) == 1
+
+
+@pytest.mark.parametrize("size", ["²", "9" * 5000], ids=["superscript", "5000-digits"])
+@patch("zendesk_mcp.tools.comments.load_config", return_value={"subdomain": "example"})
+@patch("zendesk_mcp.tools.comments.get_client")
+def test_get_comments_survives_a_crafted_size_line(mock_get_client, _config, size):
+    # A player can type an upload block of their own; one bad Size line used to fail the call.
+    from tests.conftest import MESSENGER_TRANSCRIPT
+    crafted = (f"(12:03:00) P uploaded: a.jpeg\n"
+               f"URL: https://example.zendesk.com/sc/attachments/v2/X/a.jpeg\nSize: {size}\n")
+    comment = make_mock_comment(comment_id=7, body=MESSENGER_TRANSCRIPT + crafted)
+    mock_get_client.return_value = _make_client_with_comments([comment])
+
+    from zendesk_mcp.tools.comments import _get_comments_data
+    [result] = json.loads(_get_comments_data(12345))
+
+    assert [u["size"] for u in result["transcript_uploads"]] == [226766, None]

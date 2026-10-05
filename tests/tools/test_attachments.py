@@ -280,6 +280,62 @@ def test_download_palette_gif_with_transparency(tmp_path):
     assert mime == "image/png" and preview.mode == "RGBA"
 
 
+def _sizes_rotated(monkeypatch):
+    """Record the size of every image exif_transpose is given: the first full-size copy."""
+    from PIL import ImageOps
+    from zendesk_mcp.tools import attachments
+    seen = []
+    real = ImageOps.exif_transpose
+
+    def spy(image, **kwargs):
+        seen.append(image.size)
+        return real(image, **kwargs)
+    monkeypatch.setattr(attachments.ImageOps, "exif_transpose", spy)
+    return seen
+
+
+@pytest.mark.parametrize("mode,fmt,name", [("RGB", "JPEG", "photo.jpg"), ("RGBA", "PNG", "overlay.png"),
+                                           ("P", "PNG", "palette.png")])
+def test_download_image_is_shrunk_before_it_is_copied(tmp_path, monkeypatch, mode, fmt, name):
+    # Rotating and converting the full-size frame first held three copies of it at once.
+    seen = _sizes_rotated(monkeypatch)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000), mode=mode, fmt=fmt), name)
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert seen and max(seen[0]) <= 1568
+    assert preview.size == (1568, 1176)
+
+
+def test_download_large_jpeg_is_still_shown_upright(tmp_path, monkeypatch):
+    seen = _sizes_rotated(monkeypatch)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000), orientation=6), "phone.jpg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert max(seen[0]) <= 1568
+    assert preview.size == (1176, 1568)
+
+
+def test_download_image_over_the_pixel_budget_is_refused_naming_the_cached_file(tmp_path, monkeypatch):
+    from zendesk_mcp.tools import attachments
+    monkeypatch.setattr(attachments, "_PREVIEW_MAX_PIXELS", 4_000_000)
+    original = _image_bytes((4000, 3000), mode="RGBA", fmt="PNG")
+    with pytest.raises(ToolError) as err:
+        _download_image(tmp_path, original, "huge.png")
+    cached = tmp_path / "attachments" / "12345" / "huge.png"
+    assert "4000x3000" in str(err.value) and str(cached) in str(err.value)
+    assert cached.read_bytes() == original
+
+
+def test_download_jpeg_is_budgeted_at_the_scale_it_is_decoded(tmp_path, monkeypatch):
+    # 12 million pixels as stored, 3 million as decoded at half scale: under a 4 million budget.
+    from zendesk_mcp.tools import attachments
+    monkeypatch.setattr(attachments, "_PREVIEW_MAX_PIXELS", 4_000_000)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000)), "photo.jpg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert preview.size == (1568, 1176)
+
+
 def test_download_corrupt_image_raises_naming_the_cached_file(tmp_path):
     with pytest.raises(ToolError) as err:
         _download_image(tmp_path, b"not an image", "broken.jpg")
@@ -393,3 +449,17 @@ def test_list_attachments_ignores_uploads_on_another_account(mock_get_client, _c
 
     from zendesk_mcp.tools.attachments import _list_attachments_data
     assert json.loads(_list_attachments_data(12345)) == []
+
+
+@patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"})
+@patch("zendesk_mcp.tools.attachments.get_client")
+def test_list_attachments_survives_a_crafted_size_line(mock_get_client, _config):
+    from tests.conftest import MESSENGER_TRANSCRIPT
+    crafted = ("(12:03:00) P uploaded: a.jpeg\n"
+               "URL: https://example.zendesk.com/sc/attachments/v2/X/a.jpeg\nSize: ²\n")
+    mock_get_client.return_value = _client_with_comments(
+        [make_mock_comment(body=MESSENGER_TRANSCRIPT + crafted)])
+
+    from zendesk_mcp.tools.attachments import _list_attachments_data
+    result = json.loads(_list_attachments_data(12345))
+    assert [u["size_bytes"] for u in result] == [226766, None]
