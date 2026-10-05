@@ -79,9 +79,9 @@ def test_unset_dest_dir_anywhere_is_still_allowed(tmp_path, fetch):
 # --- set ----------------------------------------------------------------------------------
 
 def test_root_default_location_is_root_slash_ticket(root, fetch):
-    result = json.loads(_download(fetch, ticket_id=8838))
-    assert result["cached_path"] == str(root / "8838" / "notes.txt")
-    assert (root / "8838" / "notes.txt").read_bytes() == b"hello"
+    result = json.loads(_download(fetch, ticket_id=1001))
+    assert result["cached_path"] == str(root / "1001" / "notes.txt")
+    assert (root / "1001" / "notes.txt").read_bytes() == b"hello"
 
 
 def test_root_overrides_a_configured_cache_dir(tmp_path, root):
@@ -102,8 +102,8 @@ def test_root_reached_through_a_symlink_is_resolved(tmp_path, monkeypatch, fetch
 
 
 def test_dest_dir_inside_the_root_is_allowed(root, fetch):
-    result = json.loads(_download(fetch, dest_dir=str(root / "work" / "8807")))
-    assert result["cached_path"] == str(root / "work" / "8807" / "notes.txt")
+    result = json.loads(_download(fetch, dest_dir=str(root / "work" / "1002")))
+    assert result["cached_path"] == str(root / "work" / "1002" / "notes.txt")
 
 
 @pytest.mark.parametrize("make_dest", [
@@ -225,16 +225,16 @@ _TOKEN_URL = "https://example.zendesk.com/attachments/token/TESTtoken/?name=IMG_
 def test_a_non_attachment_address_is_refused_before_anything_is_fetched(root, fetch, url):
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="Refusing to fetch attachment_url"):
-        _download_attachment_data(url, "u.json", 8838)
+        _download_attachment_data(url, "u.json", 1001)
     fetch.assert_not_called()
-    assert not (root / "8838" / "u.json").exists()
+    assert not (root / "1001" / "u.json").exists()
 
 
 @pytest.mark.parametrize("url", [_UPLOAD, _TOKEN_URL])
 def test_an_attachment_address_is_fetched(root, fetch, url):
     fetch.return_value = MagicMock(content=b"hello", raise_for_status=lambda: None)
     from zendesk_mcp.tools.attachments import _download_attachment_data
-    result = json.loads(_download_attachment_data(url, "notes.txt", 8838))
+    result = json.loads(_download_attachment_data(url, "notes.txt", 1001))
     assert result["content"] == "hello"
     fetch.assert_called_once()
     assert fetch.call_args.args[1] == url
@@ -247,7 +247,7 @@ def test_unset_any_url_on_the_account_is_fetched_as_before(fetch, tmp_path):
     fetch.return_value = MagicMock(content=b'{"users": []}', raise_for_status=lambda: None)
     from zendesk_mcp.tools.attachments import _download_attachment_data
     url = "https://example.zendesk.com/api/v2/users.json"
-    result = json.loads(_download_attachment_data(url, "u.json", 8838, str(tmp_path / "anywhere")))
+    result = json.loads(_download_attachment_data(url, "u.json", 1001, str(tmp_path / "anywhere")))
     assert result["content"] == '{"users": []}'
     assert fetch.call_args.args[1] == url
     assert fetch.call_args.kwargs["follow_redirects"] is True
@@ -285,7 +285,7 @@ def test_the_token_goes_to_the_first_hop_only(root, web):
         _SIGNED: (200, {}, b"hello"),
     }
     from zendesk_mcp.tools.attachments import _download_attachment_data
-    result = json.loads(_download_attachment_data(_UPLOAD, "notes.txt", 8838))
+    result = json.loads(_download_attachment_data(_UPLOAD, "notes.txt", 1001))
     assert result["content"] == "hello"
     assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (_SIGNED, None)]
 
@@ -298,9 +298,9 @@ def test_a_redirect_back_onto_the_account_carries_no_token(root, web):
     }
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="Download failed"):
-        _download_attachment_data(_UPLOAD, "u.json", 8838)
+        _download_attachment_data(_UPLOAD, "u.json", 1001)
     assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (api, None)]
-    assert not (root / "8838" / "u.json").exists()
+    assert not (root / "1001" / "u.json").exists()
 
 
 def test_a_redirect_off_https_is_refused(root, web):
@@ -308,7 +308,7 @@ def test_a_redirect_off_https_is_refused(root, web):
     web.pages = {_UPLOAD: (302, {"Location": plain}, b"")}
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="not https"):
-        _download_attachment_data(_UPLOAD, "a.txt", 8838)
+        _download_attachment_data(_UPLOAD, "a.txt", 1001)
     assert [url for url, _ in web.hops] == [_UPLOAD]
 
 
@@ -317,4 +317,4 @@ def test_a_redirect_loop_is_refused(root, web):
     web.pages = {_UPLOAD: (302, {"Location": loop}, b""), loop: (302, {"Location": loop}, b"")}
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="redirects"):
-        _download_attachment_data(_UPLOAD, "a.txt", 8838)
+        _download_attachment_data(_UPLOAD, "a.txt", 1001)

@@ -123,7 +123,7 @@ def _download_through_the_sdk(srv, tmp_path, monkeypatch, filename, content):
             return await _call_tool(srv, "zendesk_download_attachment", {
                 "attachment_url": f"https://example.zendesk.com/sc/attachments/v2/c/{filename}",
                 "filename": filename,
-                "ticket_id": 8838,
+                "ticket_id": 1001,
             })
 
     return asyncio.run(call())
@@ -149,7 +149,7 @@ def test_an_image_download_reaches_the_client_as_an_image_block(registered_serve
     preview = Image.open(io.BytesIO(base64.b64decode(image.data)))
     assert max(preview.size) == 1568
     meta = json.loads(text.text)
-    assert meta["cached_path"].endswith("8838/pickedMedia.jpg")
+    assert meta["cached_path"].endswith("1001/pickedMedia.jpg")
     assert (meta["width"], meta["height"]) == (3000, 2000)
     assert len(text.text) < 1000
 
