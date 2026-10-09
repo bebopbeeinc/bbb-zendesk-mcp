@@ -167,9 +167,9 @@ arrived on (Zendesk's `via.channel`: `web`, `email`, `api`, `facebook`, `native_
 | `zendesk_get_ticket` | Get one ticket's metadata, including its `channel` |
 | `zendesk_create_ticket` | Create a new ticket (subject, description, optional priority/type/assignee_id/requester_id/tags/custom_fields); returns it with its `channel` |
 | `zendesk_update_ticket` | Update one or more fields on an existing ticket (status, priority, subject, type, assignee_id, requester_id, group_id, custom_status_id, tags, custom_fields, due_at) |
-| `zendesk_get_comments` | Get the conversation thread on a ticket |
-| `zendesk_list_attachments` | List attachments on a ticket |
-| `zendesk_download_attachment` | Download an attachment to a local cache directory |
+| `zendesk_get_comments` | Get the conversation thread on a ticket; each comment lists its [Messaging uploads](#messaging-uploads) in `transcript_uploads` |
+| `zendesk_list_attachments` | List attachments on a ticket, and the files customers sent through [Zendesk Messaging](#messaging-uploads) |
+| `zendesk_download_attachment` | Download an attachment or Messaging upload to a [local directory](#where-downloads-are-saved); an image comes back as a picture the model can see |
 | `zendesk_ticket_to_gitlab_context` | Format a ticket and its conversation as a Markdown issue draft |
 | `zendesk_post_comment` | Post a public reply on a ticket |
 | `zendesk_post_internal_note` | Post an agent-only internal note on a ticket |
@@ -216,6 +216,73 @@ arrived on (Zendesk's `via.channel`: `web`, `email`, `api`, `facebook`, `native_
 | Tool | What it does |
 |---|---|
 | `zendesk_get_git_zen_links` | (Git-Zen only) Get linked GitLab issues / MRs / commits for a ticket |
+
+## Messaging uploads
+
+A picture or file a customer sends through Zendesk Messaging — Facebook Messenger
+(`sunshine_conversations_facebook_messenger`), the in-app widget (`native_messaging`) — is
+**not** a comment attachment: the comment's `attachments` is empty. The transcript comment's
+body names each upload instead:
+
+```
+(12:01:36) Jane Doe uploaded: photo.jpeg
+URL: https://acme.zendesk.com/sc/attachments/v2/01J8ZQ4M7K2V9X3B5N6P1R0T2Y/photo.jpeg
+Type: image/jpeg
+Size: 226766
+```
+
+The server reads those blocks, additively:
+
+- `zendesk_get_comments` — every comment carries `transcript_uploads`:
+  `[{file_name, url, content_type, size, time, uploaded_by}]`, empty when there are none.
+  `time` and `uploaded_by` (the customer, an agent or a bot) are as the transcript gives them,
+  and `null` when it does not; a missing `Type` or `Size` line is `null` too.
+- `zendesk_list_attachments` — lists each one after its comment's own attachments, with
+  `"source": "messaging_transcript"`, the `comment_id`, `uploaded_by`, `time`, and the upload
+  URL as `download_url`. There is no attachment id: Zendesk does not assign one.
+- `zendesk_download_attachment` — fetches that URL like any other attachment. It is on your
+  account host and redirects to a signed download.
+
+Only URLs on the configured `https://<subdomain>.zendesk.com` under `/sc/attachments/` are
+reported. Anything else in a body is text someone could have typed, and is ignored.
+
+### Images
+
+`zendesk_download_attachment` returns an image as an MCP image block the model can see — a
+copy downscaled to a 1568 px long edge, PNG when it has transparency and JPEG otherwise,
+under 500 KB — and a short JSON text block: `cached_path` (the original, saved untouched),
+`size_bytes`, `width`, `height` and `content_type` of the original, and the `preview`'s own.
+Up to 0.1.4 the image came back as base64 inside the JSON text, which at a few hundred KB
+overflowed the client's tool-output limit. Other file types are returned as before.
+
+The preview is made from a shrunk copy: a JPEG is decoded at 1/2 to 1/8 scale, and nothing is
+rotated or converted at full size. An image that would still decode to more than 40 million
+pixels gets no preview; the error names its `cached_path`, where the original is saved.
+
+## Where downloads are saved
+
+`zendesk_download_attachment` saves to `dest_dir` when given, otherwise to
+`~/.cache/zendesk-mcp/attachments/<ticket_id>` (or `attachment_cache_dir`/`<ticket_id>` from
+the config file). Archives are unpacked next to the file.
+
+Set `ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to confine every attachment write
+— the download and anything unpacked from an archive — to it, and the download to attachments:
+
+- the default location becomes `<root>/<ticket_id>`, whatever the config file says;
+- a `dest_dir`, a file, or an unpack directory whose real path (symlinks resolved) is outside
+  the root is refused with an error; the directory and the file are checked before anything
+  is fetched;
+- link members of a tar archive are not extracted;
+- only an attachment's own address is fetched: `attachment_url` must be on the configured
+  `https://<subdomain>.zendesk.com` under `/attachments/token/` (a comment attachment's
+  `content_url`) or `/sc/attachments/` (a [Messaging upload](#messaging-uploads)), with no
+  `.`/`..` segment, or the call is refused before anything is fetched — the OAuth token reaches
+  every path on that host, `/api/v2` included;
+- redirects are followed by hand: the token goes to that first request only, and every later
+  hop must be `https`;
+- set but blank or relative is an error, never treated as unset.
+
+Unset, nothing changes. The credentials file is not an attachment and is not affected.
 
 ## Prompts
 

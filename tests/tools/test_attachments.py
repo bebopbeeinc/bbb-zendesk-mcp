@@ -142,26 +142,205 @@ def test_download_with_dest_dir_uses_override(mock_httpx_get, mock_cache_dir, tm
     assert not (tmp_path / "cache").exists()
 
 
-@patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
-@patch("zendesk_mcp.tools.attachments.auth.request")
-def test_download_image_returns_base64(mock_httpx_get, mock_cache_dir, tmp_path):
-    mock_cache_dir.return_value = tmp_path / "attachments" / "12345"
+def _image_bytes(size, mode="RGB", fmt="JPEG", noise=False, orientation=None):
+    import io
+    import os
+    from PIL import Image
+    if noise:
+        img = Image.frombytes(mode, size, os.urandom(size[0] * size[1] * len(mode)))
+    else:
+        img = Image.new(mode, size, color=(200, 30, 30, 128)[:len(mode)])
+    params = {}
+    if orientation is not None:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        params["exif"] = exif
+    buf = io.BytesIO()
+    img.save(buf, format=fmt, **params)
+    return buf.getvalue()
+
+
+def _download_image(tmp_path, content, filename):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with patch("zendesk_mcp.tools.attachments.attachment_cache_dir",
+               return_value=tmp_path / "attachments" / "12345"), \
+            patch("zendesk_mcp.tools.attachments.auth.request",
+                  return_value=MagicMock(content=content, raise_for_status=lambda: None)):
+        return _download_attachment_data(f"https://example.zendesk.com/sc/attachments/v2/c/{filename}", filename, 12345)
+
+
+def _field(model, snake, camel):
+    # mcp 2.x's models name fields in snake_case, 1.x's in camelCase.
+    return getattr(model, snake, getattr(model, camel, None))
+
+
+def _image_result_parts(result):
+    """(metadata dict, preview PIL image, preview bytes, preview mime type) of an image result."""
     import io
     from PIL import Image
-    img = Image.new("RGB", (1, 1), color=(255, 0, 0))
+    text, image = result.content
+    assert text.type == "text" and image.type == "image"
+    preview = base64.b64decode(image.data)
+    return (json.loads(text.text), Image.open(io.BytesIO(preview)), preview,
+            _field(image, "mime_type", "mimeType"))
+
+
+def test_download_image_returns_an_image_block_and_short_metadata_not_base64_text(tmp_path):
+    original = _image_bytes((4000, 3000), noise=True)
+    result = _download_image(tmp_path, original, "pickedMedia.jpg")
+
+    meta, preview, preview_bytes, mime = _image_result_parts(result)
+    # The text is metadata only: no base64 payload inside it.
+    assert len(result.content[0].text) < 1000
+    assert "data" not in meta and "encoding" not in meta
+    assert meta["type"] == "image"
+    assert meta["cached_path"] == str(tmp_path / "attachments" / "12345" / "pickedMedia.jpg")
+    assert meta["content_type"] == "image/jpeg"
+    assert meta["size_bytes"] == len(original)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    # The copy the model sees is downscaled to the 1568 px long edge and well under 1 MB.
+    assert mime == "image/jpeg" and preview.format == "JPEG"
+    assert preview.size == (1568, 1176)
+    assert len(preview_bytes) <= 500_000
+    assert meta["preview"] == {"content_type": "image/jpeg", "width": 1568, "height": 1176,
+                               "size_bytes": len(preview_bytes)}
+    # The original is saved untouched.
+    assert Path(meta["cached_path"]).read_bytes() == original
+    # The structured copy mirrors the text, so the declared {"result": str} output still holds.
+    assert _field(result, "structured_content", "structuredContent") == {"result": result.content[0].text}
+
+
+def test_download_small_image_is_not_upscaled(tmp_path):
+    result = _download_image(tmp_path, _image_bytes((320, 200)), "tiny.jpeg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert preview.size == (320, 200)
+    assert (meta["width"], meta["height"]) == (320, 200)
+
+
+def test_download_transparent_png_stays_png(tmp_path):
+    result = _download_image(tmp_path, _image_bytes((2000, 500), mode="RGBA", fmt="PNG"), "overlay.png")
+    meta, preview, _, mime = _image_result_parts(result)
+    assert mime == "image/png" and preview.format == "PNG" and preview.mode == "RGBA"
+    assert preview.size == (1568, 392)
+    assert meta["content_type"] == "image/png"
+
+
+def test_download_rgba_screenshot_with_nothing_transparent_becomes_jpeg(tmp_path):
+    import io
+    from PIL import Image
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    mock_httpx_get.return_value = MagicMock(
-        content=buf.getvalue(),
-        raise_for_status=lambda: None,
-    )
+    Image.new("RGBA", (1080, 2400), (20, 40, 60, 255)).save(buf, format="PNG")
+    result = _download_image(tmp_path, buf.getvalue(), "Screenshot_20260101-120000.png")
+    _, preview, _, mime = _image_result_parts(result)
+    assert mime == "image/jpeg" and preview.mode == "RGB"
+    assert preview.size == (706, 1568)
 
-    from zendesk_mcp.tools.attachments import _download_attachment_data
-    result = json.loads(_download_attachment_data("https://cdn.zendesk.com/screen.png", "screen.png", 12345))
 
-    assert result["type"] == "image"
-    assert result["encoding"] == "base64"
-    assert len(result["data"]) > 0
+def test_download_opaque_png_screenshot_becomes_jpeg(tmp_path):
+    result = _download_image(tmp_path, _image_bytes((1080, 2400), fmt="PNG"), "Screenshot_20260101-120000.png")
+    meta, preview, _, mime = _image_result_parts(result)
+    assert mime == "image/jpeg"
+    assert preview.size == (706, 1568)
+    assert meta["content_type"] == "image/png"
+
+
+def test_download_transparent_png_too_big_for_the_budget_falls_back_to_jpeg(tmp_path):
+    result = _download_image(tmp_path, _image_bytes((1568, 1568), mode="RGBA", fmt="PNG", noise=True), "noise.png")
+    _, preview, preview_bytes, mime = _image_result_parts(result)
+    assert mime == "image/jpeg" and preview.mode == "RGB"
+    assert len(preview_bytes) <= 500_000
+
+
+def test_download_noisy_image_steps_down_until_it_fits_the_budget(tmp_path):
+    # Random noise does not compress: even JPEG at the lowest quality step is over budget at
+    # 1568 px, so the copy shrinks until it fits.
+    result = _download_image(tmp_path, _image_bytes((3000, 3000), noise=True, fmt="PNG"), "noise.png")
+    _, preview, preview_bytes, _ = _image_result_parts(result)
+    assert len(preview_bytes) <= 500_000
+    assert max(preview.size) <= 1568
+
+
+def test_download_image_is_shown_upright_from_its_exif_orientation(tmp_path):
+    # Orientation 6: stored landscape, displayed rotated 90 degrees -> portrait.
+    result = _download_image(tmp_path, _image_bytes((300, 100), orientation=6), "phone.jpg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (300, 100)
+    assert preview.size == (100, 300)
+
+
+def test_download_palette_gif_with_transparency(tmp_path):
+    import io
+    from PIL import Image
+    img = Image.new("P", (40, 40), 0)
+    buf = io.BytesIO()
+    img.save(buf, format="GIF", transparency=0)
+    result = _download_image(tmp_path, buf.getvalue(), "sticker.gif")
+    meta, preview, _, mime = _image_result_parts(result)
+    assert meta["content_type"] == "image/gif"
+    assert mime == "image/png" and preview.mode == "RGBA"
+
+
+def _sizes_rotated(monkeypatch):
+    """Record the size of every image exif_transpose is given: the first full-size copy."""
+    from PIL import ImageOps
+    from zendesk_mcp.tools import attachments
+    seen = []
+    real = ImageOps.exif_transpose
+
+    def spy(image, **kwargs):
+        seen.append(image.size)
+        return real(image, **kwargs)
+    monkeypatch.setattr(attachments.ImageOps, "exif_transpose", spy)
+    return seen
+
+
+@pytest.mark.parametrize("mode,fmt,name", [("RGB", "JPEG", "photo.jpg"), ("RGBA", "PNG", "overlay.png"),
+                                           ("P", "PNG", "palette.png")])
+def test_download_image_is_shrunk_before_it_is_copied(tmp_path, monkeypatch, mode, fmt, name):
+    # Rotating and converting the full-size frame first held three copies of it at once.
+    seen = _sizes_rotated(monkeypatch)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000), mode=mode, fmt=fmt), name)
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert seen and max(seen[0]) <= 1568
+    assert preview.size == (1568, 1176)
+
+
+def test_download_large_jpeg_is_still_shown_upright(tmp_path, monkeypatch):
+    seen = _sizes_rotated(monkeypatch)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000), orientation=6), "phone.jpg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert max(seen[0]) <= 1568
+    assert preview.size == (1176, 1568)
+
+
+def test_download_image_over_the_pixel_budget_is_refused_naming_the_cached_file(tmp_path, monkeypatch):
+    from zendesk_mcp.tools import attachments
+    monkeypatch.setattr(attachments, "_PREVIEW_MAX_PIXELS", 4_000_000)
+    original = _image_bytes((4000, 3000), mode="RGBA", fmt="PNG")
+    with pytest.raises(ToolError) as err:
+        _download_image(tmp_path, original, "huge.png")
+    cached = tmp_path / "attachments" / "12345" / "huge.png"
+    assert "4000x3000" in str(err.value) and str(cached) in str(err.value)
+    assert cached.read_bytes() == original
+
+
+def test_download_jpeg_is_budgeted_at_the_scale_it_is_decoded(tmp_path, monkeypatch):
+    # 12 million pixels as stored, 3 million as decoded at half scale: under a 4 million budget.
+    from zendesk_mcp.tools import attachments
+    monkeypatch.setattr(attachments, "_PREVIEW_MAX_PIXELS", 4_000_000)
+    result = _download_image(tmp_path, _image_bytes((4000, 3000)), "photo.jpg")
+    meta, preview, _, _ = _image_result_parts(result)
+    assert (meta["width"], meta["height"]) == (4000, 3000)
+    assert preview.size == (1568, 1176)
+
+
+def test_download_corrupt_image_raises_naming_the_cached_file(tmp_path):
+    with pytest.raises(ToolError) as err:
+        _download_image(tmp_path, b"not an image", "broken.jpg")
+    assert "Image processing failed" in str(err.value)
+    assert str(tmp_path / "attachments" / "12345" / "broken.jpg") in str(err.value)
 
 
 @patch("zendesk_mcp.tools.attachments.attachment_cache_dir")
@@ -220,3 +399,67 @@ def test_download_failure_raises(mock_httpx_get, mock_cache_dir, tmp_path):
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="Download failed: Zendesk API error: 503"):
         _download_attachment_data("https://cdn.zendesk.com/x.log", "x.log", 12345)
+
+
+@patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"})
+@patch("zendesk_mcp.tools.attachments.get_client")
+def test_list_attachments_includes_messaging_transcript_uploads(mock_get_client, _config):
+    from tests.conftest import IN_GAME_TRANSCRIPT
+    att = make_mock_attachment("debug.log", "text/plain", 512, "https://cdn.zendesk.com/1")
+    c1 = make_mock_comment(comment_id=1, attachments=[att])
+    c2 = make_mock_comment(comment_id=2, body=IN_GAME_TRANSCRIPT)
+    mock_get_client.return_value = _client_with_comments([c1, c2])
+
+    from zendesk_mcp.tools.attachments import _list_attachments_data
+    result = json.loads(_list_attachments_data(12345))
+
+    # The comment attachment is exactly as before.
+    assert result[0] == {
+        "comment_id": 1,
+        "filename": "debug.log",
+        "content_type": "text/plain",
+        "size_bytes": 512,
+        "download_url": "https://cdn.zendesk.com/1",
+    }
+    uploads = result[1:]
+    assert [u["filename"] for u in uploads] == [
+        "pickedMedia.jpg", "Screenshot_20260101-120000.jpg", "how-to-restore.png",
+    ]
+    first = uploads[0]
+    assert first == {
+        "comment_id": 2,
+        "filename": "pickedMedia.jpg",
+        "content_type": "image/jpeg",
+        "size_bytes": 98304,
+        "download_url": "https://example.zendesk.com/sc/attachments/v2/01J8ZR5D3F7H9K1M3P5R7T9V1X/pickedMedia.jpg",
+        "source": "messaging_transcript",
+        "uploaded_by": "Player Two",
+        "time": "09:14:20",
+    }
+    # No attachment id is made up for an upload Zendesk never gave one.
+    assert all("id" not in u for u in uploads)
+    assert uploads[2]["uploaded_by"] == "Support Agent"
+
+
+@patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "other"})
+@patch("zendesk_mcp.tools.attachments.get_client")
+def test_list_attachments_ignores_uploads_on_another_account(mock_get_client, _config):
+    from tests.conftest import MESSENGER_TRANSCRIPT
+    mock_get_client.return_value = _client_with_comments([make_mock_comment(body=MESSENGER_TRANSCRIPT)])
+
+    from zendesk_mcp.tools.attachments import _list_attachments_data
+    assert json.loads(_list_attachments_data(12345)) == []
+
+
+@patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"})
+@patch("zendesk_mcp.tools.attachments.get_client")
+def test_list_attachments_survives_a_crafted_size_line(mock_get_client, _config):
+    from tests.conftest import MESSENGER_TRANSCRIPT
+    crafted = ("(12:03:00) P uploaded: a.jpeg\n"
+               "URL: https://example.zendesk.com/sc/attachments/v2/X/a.jpeg\nSize: ²\n")
+    mock_get_client.return_value = _client_with_comments(
+        [make_mock_comment(body=MESSENGER_TRANSCRIPT + crafted)])
+
+    from zendesk_mcp.tools.attachments import _list_attachments_data
+    result = json.loads(_list_attachments_data(12345))
+    assert [u["size_bytes"] for u in result] == [226766, None]

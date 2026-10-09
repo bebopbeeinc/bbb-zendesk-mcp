@@ -3,6 +3,42 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 
+@pytest.fixture(autouse=True)
+def _no_attachment_root(monkeypatch):
+    """A developer's own ZENDESK_MCP_ATTACHMENT_ROOT must not change what the suite tests."""
+    monkeypatch.delenv("ZENDESK_MCP_ATTACHMENT_ROOT", raising=False)
+
+
+# Anonymised copies of real Zendesk Messaging transcript comments: the shape is the live one
+# (a Facebook Messenger ticket and an in-app native_messaging one), the names, ids and file
+# tokens are made up. The account host is example.zendesk.com, so tests configure "example".
+MESSENGER_TRANSCRIPT = """Conversation with Player One
+
+(12:00:58) Player One: hi my streak reset after the update
+(12:01:36) Player One uploaded: Qx7LmN2pRs4tUv6wXy8zAb1c.jpeg
+URL: https://example.zendesk.com/sc/attachments/v2/01J8ZQ4M7K2V9X3B5N6P1R0T2Y/Qx7LmN2pRs4tUv6wXy8zAb1c.jpeg
+Type: image/jpeg
+Size: 226766
+
+(12:02:15) Support Bot: Thanks, we are looking into it.
+"""
+
+IN_GAME_TRANSCRIPT = """(09:14:02) Player Two: the shop took my coins
+(09:14:20) Player Two uploaded: pickedMedia.jpg
+URL: https://example.zendesk.com/sc/attachments/v2/01J8ZR5D3F7H9K1M3P5R7T9V1X/pickedMedia.jpg
+Type: image/jpeg
+Size: 98304
+(09:14:40) Player Two uploaded: Screenshot_20260101-120000.jpg
+URL: https://example.zendesk.com/sc/attachments/v2/01J8ZR5D3F7H9K1M3P5R7T9V1X/Screenshot_20260101-120000.jpg
+Type: image/jpeg
+Size: 412001
+(09:15:03) Support Agent uploaded: how-to-restore.png
+URL: https://example.zendesk.com/sc/attachments/v2/01J8ZR5D3F7H9K1M3P5R7T9V1X/how-to-restore.png
+Type: image/png
+Size: 51200
+"""
+
+
 def make_mock_user(name="Jane Smith", email="jane@customer.com", role="end-user", user_id=101):
     user = MagicMock()
     user.id = user_id

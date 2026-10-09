@@ -70,6 +70,14 @@ def test_download_dir_that_cannot_be_created_is_a_tool_error(tmp_path):
         _download(tmp_path, b"hi", "a.log", dest_dir=str(blocker / "sub"))
 
 
+def test_a_cache_dir_that_cannot_be_resolved_is_a_tool_error(tmp_path):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+    with patch("zendesk_mcp.tools.attachments.attachment_cache_dir",
+               side_effect=PermissionError("[Errno 13] Permission denied: 'config.json'")):
+        with pytest.raises(ToolError, match="Cannot create the download directory: .*Permission denied"):
+            _download_attachment_data("https://cdn.zendesk.com/f", "a.log", 1)
+
+
 def test_encrypted_zip_is_a_tool_error_naming_the_cached_file(tmp_path, monkeypatch):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

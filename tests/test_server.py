@@ -104,3 +104,74 @@ def test_a_successful_tool_call_is_not_an_error(registered_server):
 
     result = asyncio.run(call())
     assert not _is_error(result)
+
+
+def _field(model, snake, camel):
+    # mcp 2.x's models name fields in snake_case, 1.x's in camelCase.
+    return getattr(model, snake, getattr(model, camel, None))
+
+
+def _download_through_the_sdk(srv, tmp_path, monkeypatch, filename, content):
+    """Call zendesk_download_attachment the way a client does, saving under tmp_path."""
+    from unittest.mock import MagicMock
+    monkeypatch.setenv("ZENDESK_MCP_ATTACHMENT_ROOT", str(tmp_path))
+
+    async def call():
+        with patch("zendesk_mcp.tools.attachments.auth.request",
+                   return_value=MagicMock(content=content, raise_for_status=lambda: None)), \
+                patch("zendesk_mcp.tools.attachments.load_config", return_value={"subdomain": "example"}):
+            return await _call_tool(srv, "zendesk_download_attachment", {
+                "attachment_url": f"https://example.zendesk.com/sc/attachments/v2/c/{filename}",
+                "filename": filename,
+                "ticket_id": 1001,
+            })
+
+    return asyncio.run(call())
+
+
+def test_an_image_download_reaches_the_client_as_an_image_block(registered_server, tmp_path, monkeypatch):
+    """The picture must arrive as image content the model can see, not as base64 in text,
+    which overflowed Claude Code's tool-output limit at a few hundred KB."""
+    import base64
+    import io
+    import json
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (3000, 2000), (10, 120, 200)).save(buf, format="JPEG")
+    result = _download_through_the_sdk(registered_server, tmp_path, monkeypatch, "pickedMedia.jpg", buf.getvalue())
+
+    assert not _is_error(result)
+    kinds = [block.type for block in result.content]
+    assert kinds == ["text", "image"]
+    text, image = result.content
+    assert _field(image, "mime_type", "mimeType") == "image/jpeg"
+    preview = Image.open(io.BytesIO(base64.b64decode(image.data)))
+    assert max(preview.size) == 1568
+    meta = json.loads(text.text)
+    assert meta["cached_path"].endswith("1001/pickedMedia.jpg")
+    assert (meta["width"], meta["height"]) == (3000, 2000)
+    assert len(text.text) < 1000
+
+
+def test_a_non_image_download_reaches_the_client_as_before(registered_server, tmp_path, monkeypatch):
+    import json
+    result = _download_through_the_sdk(registered_server, tmp_path, monkeypatch, "debug.log", b"ERROR: disk full")
+
+    assert not _is_error(result)
+    [block] = result.content
+    assert block.type == "text"
+    payload = json.loads(block.text)
+    assert payload["type"] == "text" and payload["content"] == "ERROR: disk full"
+    # Same structured output as every other str tool: {"result": <the JSON text>}.
+    assert _field(result, "structured_content", "structuredContent") == {"result": block.text}
+
+
+def test_download_attachment_declares_the_same_output_schema_as_before(registered_server):
+    tools = {t.name: t for t in asyncio.run(registered_server.list_tools())}
+    download = _field(tools["zendesk_download_attachment"], "output_schema", "outputSchema")
+    plain_str = _field(tools["zendesk_list_attachments"], "output_schema", "outputSchema")
+    # {"result": string}, as a `-> str` tool declares; only the generated title names the tool.
+    assert {k: v for k, v in download.items() if k != "title"} == \
+        {k: v for k, v in plain_str.items() if k != "title"}
+    assert download["properties"]["result"]["type"] == "string"
