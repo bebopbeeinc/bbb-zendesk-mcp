@@ -19,7 +19,7 @@ This mode is **not present at historical revision
 `ZENDESK_*` variables only during interactive `setup`, requests `read write`,
 and subsequently reads its grant from `~/.config/zendesk-mcp/config.json`.
 Installing that revision with only the environment variables is insufficient.
-Use the reviewed commit containing this document instead.
+Use the immutable headless implementation pin shown below instead.
 
 ## What Marcelo must do once
 
@@ -63,12 +63,12 @@ way to limit this connection; the `read` scope is the write restriction.
 
 ## Install command and Bot attachment (do not run until authorized)
 
-Replace `REVIEWED_COMMIT_SHA` with the immutable reviewed commit containing
-headless mode; it must **not** be the historical revision above. On the current
+The immutable implementation pin below has passing CI and a clean Devin Review.
+It must **not** be replaced with the historical revision above. On the current
 Linux Devin image, the STDIO launch command is:
 
 ```sh
-/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@REVIEWED_COMMIT_SHA zendesk-mcp
+/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@7656518c1b0b31438ccd576d5f7d668dbc9cad3c zendesk-mcp
 ```
 
 After the code is reviewed and the three protected secrets exist, the Bot can
@@ -81,7 +81,7 @@ request this **custom STDIO** installation with `devin_mcp_server_manage`:
   "slug": "zendesk-readonly",
   "short_description": "Read-only Zendesk OAuth for the community pilot",
   "transport": "STDIO",
-  "command": "/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@REVIEWED_COMMIT_SHA zendesk-mcp",
+  "command": "/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@7656518c1b0b31438ccd576d5f7d668dbc9cad3c zendesk-mcp",
   "auth_method": "none",
   "env_secret_names": {
     "ZENDESK_CLIENT_ID": "MCP_ZENDESK_CLIENT_ID",
