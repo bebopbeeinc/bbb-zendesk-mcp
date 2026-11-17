@@ -109,7 +109,7 @@ def _apply_macro_data(ticket_id: int, macro_id: int) -> str:
         raise ToolError(api_error_message(e)) from e
 
 
-def register_macro_tools(mcp) -> None:
+def register_macro_tools(mcp, read_only: bool = False) -> None:
     @mcp.tool()
     def zendesk_list_macros() -> str:
         """List all active Zendesk macros with their actions. Returns JSON array of {id, title, description, actions: [{field, value}]}."""
@@ -119,6 +119,9 @@ def register_macro_tools(mcp) -> None:
     def zendesk_preview_macro(macro_id: int) -> str:
         """Preview the effect a macro would have (without applying it). Returns the result payload from Zendesk's apply preview endpoint."""
         return _preview_macro_data(macro_id)
+
+    if read_only:
+        return
 
     @mcp.tool()
     def zendesk_apply_macro(ticket_id: int, macro_id: int) -> str:

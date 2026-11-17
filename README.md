@@ -46,6 +46,12 @@ For development (also installs pytest):
 
 ## OAuth setup
 
+For unattended, read-only sessions, use the separate
+[headless OAuth setup](docs/devin-readonly-oauth.md) instead. It uses a Confidential
+client restricted to `read`, keeps access tokens only in process memory, renews
+them without browser interaction, and does not expose write tools. The interactive
+setup below remains unchanged for existing users.
+
 Run the interactive setup using the venv's Python:
 
 ```bash

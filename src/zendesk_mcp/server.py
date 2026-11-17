@@ -1,5 +1,7 @@
 import sys
 
+from zendesk_mcp.config import headless_read_only
+
 try:
     # mcp >= 2.0 renamed FastMCP to MCPServer and moved it out of mcp.server.fastmcp.
     # The decorator API (tool/resource/prompt) and run() are unchanged.
@@ -11,6 +13,7 @@ mcp = FastMCP("zendesk-mcp")
 
 
 def register_all(mcp) -> None:
+    read_only = headless_read_only()
     from zendesk_mcp.tools.ticket import register_ticket_tools
     from zendesk_mcp.tools.comments import register_comments_tools
     from zendesk_mcp.tools.attachments import register_attachment_tools
@@ -35,16 +38,17 @@ def register_all(mcp) -> None:
     register_comments_tools(mcp)
     register_attachment_tools(mcp)
     register_gitlab_context_tools(mcp)
-    register_write_comment_tools(mcp)
-    register_update_ticket_tools(mcp)
-    register_time_tracking_tools(mcp)
+    if not read_only:
+        register_write_comment_tools(mcp)
+        register_update_ticket_tools(mcp)
+        register_create_ticket_tools(mcp)
+        register_tag_tools(mcp)
+    register_time_tracking_tools(mcp, read_only=read_only)
     register_git_zen_tools(mcp)
-    register_create_ticket_tools(mcp)
     register_list_tickets_tools(mcp)
     register_knowledge_base_resource(mcp)
-    register_tag_tools(mcp)
     register_view_tools(mcp)
-    register_macro_tools(mcp)
+    register_macro_tools(mcp, read_only=read_only)
     register_user_tools(mcp)
     register_group_tools(mcp)
     register_organization_tools(mcp)
@@ -54,6 +58,8 @@ def register_all(mcp) -> None:
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        if headless_read_only():
+            raise ValueError("Headless OAuth uses environment credentials; do not run setup")
         from zendesk_mcp.setup import run_setup
         run_setup()
         return

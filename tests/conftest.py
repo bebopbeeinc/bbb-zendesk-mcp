@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 def _no_attachment_root(monkeypatch):
     """A developer's own ZENDESK_MCP_ATTACHMENT_ROOT must not change what the suite tests."""
     monkeypatch.delenv("ZENDESK_MCP_ATTACHMENT_ROOT", raising=False)
+    monkeypatch.delenv("ZENDESK_AUTH_MODE", raising=False)
 
 
 # Anonymised copies of real Zendesk Messaging transcript comments: the shape is the live one
