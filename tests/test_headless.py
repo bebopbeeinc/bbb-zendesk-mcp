@@ -111,10 +111,17 @@ def test_rejected_api_token_is_retried_with_new_client_credentials(unattended):
                               request=httpx.Request("GET", "https://example.zendesk.com/api/v2/tickets.json"))
     accepted = httpx.Response(200, json={"tickets": []})
     unattended.side_effect = [response(), response("replacement")]
-    with patch("httpx.request", side_effect=[rejected, accepted]) as request:
+    answers = iter([rejected, accepted])
+    sent_tokens = []
+
+    def send(*args, **kwargs):
+        # auth.request updates its headers for the retry; snapshot at send time.
+        sent_tokens.append(kwargs["headers"]["Authorization"])
+        return next(answers)
+
+    with patch("httpx.request", side_effect=send):
         assert auth.request("GET", str(rejected.url), now=100) is accepted
-    assert request.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer first-token"
-    assert request.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer replacement"
+    assert sent_tokens == ["Bearer first-token", "Bearer replacement"]
     assert unattended.call_count == 2
 
 
