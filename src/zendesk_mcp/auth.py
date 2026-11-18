@@ -53,6 +53,11 @@ def expired_message(detail: str = "") -> str:
     )
     if detail:
         base = f"{base} ({detail})"
+    if headless_read_only():
+        return (
+            f"{base} Check or rotate ZENDESK_CLIENT_ID and ZENDESK_CLIENT_SECRET, "
+            "confirm the Confidential client's allowed read scope, and restart the MCP server."
+        )
     return f"{base} {REAUTH_HINT}"
 
 

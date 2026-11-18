@@ -36,15 +36,15 @@ def register_all(mcp) -> None:
 
     register_ticket_tools(mcp)
     register_comments_tools(mcp)
-    register_attachment_tools(mcp)
+    register_attachment_tools(mcp, read_only=read_only)
     register_gitlab_context_tools(mcp)
     if not read_only:
         register_write_comment_tools(mcp)
         register_update_ticket_tools(mcp)
         register_create_ticket_tools(mcp)
         register_tag_tools(mcp)
+        register_git_zen_tools(mcp)
     register_time_tracking_tools(mcp, read_only=read_only)
-    register_git_zen_tools(mcp)
     register_list_tickets_tools(mcp)
     register_knowledge_base_resource(mcp)
     register_view_tools(mcp)

@@ -131,6 +131,32 @@ def test_zenpy_read_path_uses_headless_grant(unattended):
     assert request.call_args.kwargs["headers"]["Authorization"] == "Bearer first-token"
 
 
+@pytest.mark.parametrize("transport", ["httpx", "zenpy"])
+def test_repeated_rejection_gives_headless_recovery_in_both_paths(unattended, transport):
+    url = "https://example.zendesk.com/api/v2/tickets.json"
+    rejected = httpx.Response(401, json={"error": "invalid_token"},
+                              request=httpx.Request("GET", url))
+    unattended.side_effect = [response(), response("replacement")]
+    target = "httpx.request" if transport == "httpx" else "requests.Session.request"
+    with patch(target, side_effect=[rejected, rejected]) as send:
+        with pytest.raises(auth.TokenExpiredError) as caught:
+            if transport == "httpx":
+                auth.request("GET", url)
+            else:
+                RefreshingZendeskSession("example").request("GET", url)
+    message = str(caught.value)
+    assert "ZENDESK_CLIENT_ID" in message
+    assert "ZENDESK_CLIENT_SECRET" in message
+    assert "allowed read scope" in message
+    assert "restart" in message
+    assert "zendesk-mcp setup" not in message
+    assert "test-client-secret" not in message
+    assert "first-token" not in message
+    assert "replacement" not in message
+    assert unattended.call_count == 2
+    assert send.call_count == 2
+
+
 def test_only_read_tools_are_advertised_without_minting_tokens(unattended):
     from zendesk_mcp.server import FastMCP, register_all
 
@@ -138,11 +164,13 @@ def test_only_read_tools_are_advertised_without_minting_tokens(unattended):
     register_all(server)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert {"zendesk_get_ticket", "zendesk_get_comments", "zendesk_search_tickets",
-            "zendesk_get_tickets", "zendesk_search_users", "zendesk_preview_macro"} <= names
+            "zendesk_get_tickets", "zendesk_search_users", "zendesk_preview_macro",
+            "zendesk_list_attachments"} <= names
     assert not names & {
         "zendesk_post_comment", "zendesk_post_internal_note", "zendesk_set_ticket_status",
         "zendesk_assign_ticket", "zendesk_update_ticket", "zendesk_create_ticket",
         "zendesk_log_time", "zendesk_add_tag", "zendesk_remove_tag", "zendesk_apply_macro",
+        "zendesk_download_attachment", "zendesk_get_git_zen_links",
     }
     unattended.assert_not_called()
 

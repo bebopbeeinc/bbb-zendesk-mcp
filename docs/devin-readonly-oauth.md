@@ -8,6 +8,13 @@ The server also requests exactly `read`, refuses write methods locally, and
 advertises only read tools. It never runs browser setup, reads an existing
 interactive grant, or saves credentials/tokens to disk in this mode.
 
+Attachment listing remains available, but attachment downloading is hidden to
+prevent local file writes. Git-Zen link lookup is also hidden: this mode does not
+read the interactive configuration containing its required custom-field ID.
+If a token is rejected again after renewal, check or rotate the environment's
+client credentials, confirm the client's allowed `read` scope, and restart the
+server; interactive `setup` is not supported in this mode.
+
 Zendesk explicitly recommends client credentials for background jobs. These
 grants have **no refresh token**: the server caches the short-lived access token
 in memory and obtains another using the client credentials before expiry or

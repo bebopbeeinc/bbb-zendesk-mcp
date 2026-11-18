@@ -396,11 +396,14 @@ def _handle_image(dest: Path, size_bytes: int) -> CallToolResult:
     )
 
 
-def register_attachment_tools(mcp) -> None:
+def register_attachment_tools(mcp, read_only: bool = False) -> None:
     @mcp.tool()
     def zendesk_list_attachments(ticket_id: int) -> str:
-        """List all attachments across all comments for a Zendesk ticket. Returns filename, content type, size, and download URL for each. Files a customer sent through Zendesk Messaging (Messenger, in-app chat) are not comment attachments; they are listed from the transcript with "source": "messaging_transcript" and the uploader and time when the transcript names them. Use zendesk_download_attachment to fetch file contents."""
+        """List all attachments across all comments for a Zendesk ticket. Returns filename, content type, size, and download URL for each. Files a customer sent through Zendesk Messaging (Messenger, in-app chat) are not comment attachments; they are listed from the transcript with "source": "messaging_transcript" and the uploader and time when the transcript names them."""
         return _list_attachments_data(ticket_id)
+
+    if read_only:
+        return
 
     @mcp.tool()
     def zendesk_download_attachment(
