@@ -70,12 +70,12 @@ way to limit this connection; the `read` scope is the write restriction.
 
 ## Install command and Bot attachment (do not run until authorized)
 
-The immutable implementation pin below has passing CI and a clean Devin Review.
-It must **not** be replaced with the historical revision above. On the current
+The immutable implementation pin below includes the headless read-only fixes.
+Install only after PR review is complete; do **not** use the historical revision above. On the current
 Linux Devin image, the STDIO launch command is:
 
 ```sh
-/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@7656518c1b0b31438ccd576d5f7d668dbc9cad3c zendesk-mcp
+/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@0a41905a73917eae517f4dd9c368966d02e46a41 zendesk-mcp
 ```
 
 After the code is reviewed and the three protected secrets exist, the Bot can
@@ -88,7 +88,7 @@ request this **custom STDIO** installation with `devin_mcp_server_manage`:
   "slug": "zendesk-readonly",
   "short_description": "Read-only Zendesk OAuth for the community pilot",
   "transport": "STDIO",
-  "command": "/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@7656518c1b0b31438ccd576d5f7d668dbc9cad3c zendesk-mcp",
+  "command": "/usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@0a41905a73917eae517f4dd9c368966d02e46a41 zendesk-mcp",
   "auth_method": "none",
   "env_secret_names": {
     "ZENDESK_CLIENT_ID": "MCP_ZENDESK_CLIENT_ID",
