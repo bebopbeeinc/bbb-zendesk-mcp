@@ -6,6 +6,18 @@ from pathlib import Path
 from filelock import FileLock
 
 
+def headless_read_only() -> bool:
+    mode = os.environ.get("ZENDESK_AUTH_MODE", "").strip()
+    if mode not in ("", "client_credentials"):
+        raise ValueError("ZENDESK_AUTH_MODE must be unset or client_credentials")
+    return mode == "client_credentials"
+
+
+def require_read_method(method: str) -> None:
+    if headless_read_only() and method.upper() not in {"GET", "HEAD"}:
+        raise ValueError("Headless OAuth permits only read-only Zendesk requests")
+
+
 def config_path() -> Path:
     return Path.home() / ".config" / "zendesk-mcp" / "config.json"
 
@@ -25,6 +37,9 @@ def config_file_lock(
 
 
 def load_config(path: Path | None = None) -> dict:
+    if headless_read_only():
+        # Never inherit an interactive user's grant, or write rotating tokens to disk.
+        return {"subdomain": os.environ.get("ZENDESK_SUBDOMAIN", "").strip()}
     resolved = path or config_path()
     try:
         return json.loads(resolved.read_text())

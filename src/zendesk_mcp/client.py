@@ -5,7 +5,7 @@ from requests.adapters import HTTPAdapter
 from zenpy import Zenpy
 
 from zendesk_mcp import auth
-from zendesk_mcp.config import load_config
+from zendesk_mcp.config import load_config, require_read_method
 
 
 class ConfigError(Exception):
@@ -52,6 +52,7 @@ class RefreshingZendeskSession(requests.Session):
             prepared_request.headers.pop("Authorization", None)
 
     def request(self, method: str, url: str, **kwargs) -> requests.Response:
+        require_read_method(method)
         # Validate before valid_token() can perform a network refresh. More
         # importantly, the bearer token is never attached to an arbitrary URL passed
         # through the otherwise-general requests.Session API.

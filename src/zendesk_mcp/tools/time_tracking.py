@@ -73,11 +73,14 @@ def _log_time_data(ticket_id: int, seconds: int) -> str:
         raise ToolError(api_error_message(e)) from e
 
 
-def register_time_tracking_tools(mcp) -> None:
+def register_time_tracking_tools(mcp, read_only: bool = False) -> None:
     @mcp.tool()
     def zendesk_get_time_tracking(ticket_id: int) -> str:
         """Get time tracking data for a Zendesk ticket. Returns total time spent and time spent on the last update, in both seconds and human-readable format (e.g. '2h 15m')."""
         return _get_time_tracking_data(ticket_id)
+
+    if read_only:
+        return
 
     @mcp.tool()
     def zendesk_log_time(ticket_id: int, seconds: int) -> str:

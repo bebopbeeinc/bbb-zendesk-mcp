@@ -17,7 +17,9 @@ from urllib.parse import urlparse
 import httpx
 from filelock import Timeout as FileLockTimeout
 
-from zendesk_mcp.config import config_file_lock, load_config, save_config
+from zendesk_mcp.config import (
+    config_file_lock, headless_read_only, load_config, require_read_method, save_config,
+)
 
 # Refresh slightly ahead of the deadline so a request already in flight does not
 # land on a token that expired in transit.
@@ -51,6 +53,11 @@ def expired_message(detail: str = "") -> str:
     )
     if detail:
         base = f"{base} ({detail})"
+    if headless_read_only():
+        return (
+            f"{base} Check or rotate ZENDESK_CLIENT_ID and ZENDESK_CLIENT_SECRET, "
+            "confirm the Confidential client's allowed read scope, and restart the MCP server."
+        )
     return f"{base} {REAUTH_HINT}"
 
 
@@ -228,6 +235,9 @@ def refresh_rejected_token(
     Keeping this operation centralized ensures both the direct-httpx and Zenpy request
     paths serialize Zendesk's single-use refresh-token rotation in the same way.
     """
+    if headless_read_only():
+        from zendesk_mcp.headless import token_config
+        return token_config(now=now, rejected_token=rejected_token)
     cfg = load_config(config_file) or cfg_snapshot or {}
     if not can_refresh(cfg):
         raise TokenExpiredError(expired_message("server rejected the token"))
@@ -248,6 +258,10 @@ def valid_token(
 
     Raises TokenExpiredError when the token is expired and cannot be renewed.
     """
+    if headless_read_only():
+        from zendesk_mcp.headless import token_config
+        cfg = token_config(now=now)
+        return cfg["subdomain"], cfg["oauth_token"]
     cfg = cfg_snapshot if cfg_snapshot is not None else load_config(config_file)
     subdomain = cfg.get("subdomain", "").strip()
     token = cfg.get("oauth_token", "").strip()
@@ -275,6 +289,7 @@ def request(
     Pre-emptive expiry checking covers the normal case; this also handles a token
     revoked server-side or a clock skew that made it look valid.
     """
+    require_read_method(method)
     kwargs.setdefault("timeout", 30)
     snapshot = load_config(config_file)
     subdomain = validate_zendesk_subdomain(snapshot.get("subdomain", ""))
