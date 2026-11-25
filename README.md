@@ -292,6 +292,7 @@ or to enable confinement in interactive mode. With confinement:
 - set but blank or relative is an error, never treated as unset.
 
 In headless mode, archives over 100 MiB expanded or 1,000 entries are saved but not unpacked.
+The tool returns an error with the cached archive's path instead of a file list and unpack directory.
 On POSIX, headless downloads create directories with mode `0700` and files with mode `0600`,
 including unpacked files. Existing directories keep their permissions, but the cache root and
 any directories used beneath it must be owned by the server user and must not be group- or
