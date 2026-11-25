@@ -227,6 +227,19 @@ def test_headless_download_makes_existing_cache_and_new_directories_private(head
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
 
 
+def test_headless_download_without_posix_permission_primitives(headless_cache, fetch, monkeypatch):
+    for name in ("O_DIRECTORY", "O_NOFOLLOW", "fchmod"):
+        monkeypatch.delattr(os, name, raising=False)
+
+    result = json.loads(_download(fetch))
+    saved = Path(result["cached_path"])
+    assert saved.parent == headless_cache / "12345"
+    assert saved.read_bytes() == b"hello"
+    if os.name == "posix":
+        assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+        assert stat.S_IMODE(saved.parent.stat().st_mode) == 0o700
+
+
 @pytest.mark.parametrize("extension", ["zip", "tar.gz"])
 def test_headless_archives_unpack_private_files_and_directories(headless_cache, fetch, umask_022, extension):
     buf = io.BytesIO()
