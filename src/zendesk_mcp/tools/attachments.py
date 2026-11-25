@@ -4,9 +4,10 @@ import json
 import os
 import tarfile
 import zipfile
+from collections.abc import Callable, Iterable
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -70,6 +71,8 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 
 # Bounds applied to tool response payloads to stay within MCP transport limits.
 _ARCHIVE_FILE_LIST_CAP = 500
+_HEADLESS_ARCHIVE_MAX_ENTRIES = 1_000
+_HEADLESS_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024
 _PDF_TEXT_CAP_BYTES = 500_000
 # An image comes back as an image block the model can see: a copy no larger than the
 # long edge vision models use, encoded under a byte budget. The original stays on disk.
@@ -246,11 +249,34 @@ def _archive_summary(dest: Path, unpack_dir: Path) -> str:
     })
 
 
+_ArchiveMember = TypeVar("_ArchiveMember", zipfile.ZipInfo, tarfile.TarInfo)
+
+
+def _bounded_archive_members(
+    members: Iterable[_ArchiveMember], size: Callable[[_ArchiveMember], int],
+) -> list[_ArchiveMember]:
+    checked = []
+    total = 0
+    for member in members:
+        if len(checked) == _HEADLESS_ARCHIVE_MAX_ENTRIES:
+            raise ToolError(f"Archive exceeds the {_HEADLESS_ARCHIVE_MAX_ENTRIES} entry limit")
+        member_size = size(member)
+        if member_size < 0:
+            raise ToolError("Archive member has an invalid negative size")
+        total += member_size
+        if total > _HEADLESS_ARCHIVE_MAX_BYTES:
+            raise ToolError(f"Archive exceeds the {_HEADLESS_ARCHIVE_MAX_BYTES} expanded-byte limit")
+        checked.append(member)
+    return checked
+
+
 def _handle_zip(dest: Path, root: Path | None = None) -> str:
     unpack_dir = dest.parent / dest.stem
     _confine(unpack_dir, root, "the archive contents into")
     try:
         with zipfile.ZipFile(dest) as zf:
+            if headless_read_only():
+                _bounded_archive_members(zf.infolist(), lambda member: member.file_size)
             safe_members = _safe_zip_members(zf, unpack_dir)
             for member in safe_members:
                 zf.extract(member, unpack_dir)
@@ -266,8 +292,12 @@ def _handle_tar(dest: Path, root: Path | None = None) -> str:
     _confine(unpack_dir, root, "the archive contents into")
     try:
         with tarfile.open(dest) as tf:
+            members = (
+                _bounded_archive_members(tf, lambda member: member.size)
+                if headless_read_only() else tf.getmembers()
+            )
             safe_members = [
-                m for m in tf.getmembers()
+                m for m in members
                 if (unpack_dir / m.name).resolve().parts[:len(unpack_dir.resolve().parts)] == unpack_dir.resolve().parts
             ]
             extract_kwargs = {}

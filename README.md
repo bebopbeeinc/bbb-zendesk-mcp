@@ -291,6 +291,7 @@ or to enable confinement in interactive mode. With confinement:
   hop must be `https`;
 - set but blank or relative is an error, never treated as unset.
 
+In headless mode, archives over 100 MiB expanded or 1,000 entries are saved but not unpacked.
 With the variable unset, interactive downloads are unchanged. Downloading never changes Zendesk.
 
 ## Prompts

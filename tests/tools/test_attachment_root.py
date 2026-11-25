@@ -180,6 +180,33 @@ def test_a_zip_unpacks_inside_the_root(root, fetch):
     assert (root / "12345" / "bundle" / "logs" / "app.log").read_text() == "boot ok"
 
 
+@pytest.mark.parametrize("extension", ["zip", "tar.gz"])
+@pytest.mark.parametrize("limit", ["expanded-byte", "entry"])
+def test_headless_archive_over_limit_is_not_unpacked(headless_cache, fetch, monkeypatch, extension, limit):
+    if limit == "expanded-byte":
+        monkeypatch.setattr("zendesk_mcp.tools.attachments._HEADLESS_ARCHIVE_MAX_BYTES", 5)
+    else:
+        monkeypatch.setattr("zendesk_mcp.tools.attachments._HEADLESS_ARCHIVE_MAX_ENTRIES", 1)
+    files = {"first.txt": b"abc", "second.txt": b"def"}
+    buf = io.BytesIO()
+    if extension == "zip":
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for name, data in files.items():
+                zf.writestr(name, data)
+    else:
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for name, data in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+    with pytest.raises(ToolError, match=f"{limit} limit"):
+        _download(fetch, f"bundle.{extension}", content=buf.getvalue())
+
+    cached, = (headless_cache / "12345").iterdir()
+    assert cached.read_bytes() == buf.getvalue()
+
+
 def test_an_unpack_dir_symlinked_outside_is_refused(root, outside, fetch):
     (root / "12345").mkdir(parents=True)
     (root / "12345" / "bundle").symlink_to(outside)
