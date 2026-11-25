@@ -10,6 +10,7 @@ to that first hop only.
 import io
 import json
 import os
+import stat
 import tarfile
 import zipfile
 from pathlib import Path
@@ -197,6 +198,63 @@ def test_a_zip_unpacks_inside_the_root(root, fetch):
     result = json.loads(_download(fetch, "bundle.zip", content=buf.getvalue()))
     assert result["unpack_dir"] == str(root / "12345" / "bundle")
     assert (root / "12345" / "bundle" / "logs" / "app.log").read_text() == "boot ok"
+
+
+@pytest.fixture
+def umask_022():
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def test_headless_download_makes_existing_cache_and_new_directories_private(headless_cache, fetch, umask_022):
+    headless_cache.mkdir(parents=True)
+    headless_cache.chmod(0o755)
+    batch = headless_cache / "batch"
+    batch.mkdir(mode=0o755)
+    dest_dir = batch / "nested" / "ticket"
+    result = json.loads(_download(fetch, dest_dir=str(dest_dir)))
+    saved = Path(result["cached_path"])
+    saved.chmod(0o644)
+    result = json.loads(_download(fetch, dest_dir=str(dest_dir), content=b"updated"))
+
+    assert Path(result["cached_path"]) == saved
+    assert saved.read_bytes() == b"updated"
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+    for directory in (headless_cache, batch, dest_dir.parent, dest_dir):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("extension", ["zip", "tar.gz"])
+def test_headless_archives_unpack_private_files_and_directories(headless_cache, fetch, umask_022, extension):
+    buf = io.BytesIO()
+    filename = "explicit/implicit/notes.txt"
+    if extension == "zip":
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("explicit/", b"")
+            zf.writestr(filename, b"customer data")
+    else:
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            directory = tarfile.TarInfo("explicit")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o777
+            tf.addfile(directory)
+            file = tarfile.TarInfo(filename)
+            file.mode = 0o777
+            file.size = len(b"customer data")
+            tf.addfile(file, io.BytesIO(b"customer data"))
+
+    result = json.loads(_download(fetch, f"bundle.{extension}", content=buf.getvalue()))
+    unpack_dir = Path(result["unpack_dir"])
+    cached = Path(result["cached_path"])
+    assert unpack_dir.parent == cached.parent == headless_cache / "12345"
+    assert (unpack_dir / filename).read_bytes() == b"customer data"
+    for directory in (unpack_dir, unpack_dir / "explicit", unpack_dir / "explicit" / "implicit"):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    for file in (cached, unpack_dir / filename):
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("extension", ["zip", "tar.gz"])

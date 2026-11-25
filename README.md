@@ -292,6 +292,7 @@ or to enable confinement in interactive mode. With confinement:
 - set but blank or relative is an error, never treated as unset.
 
 In headless mode, archives over 100 MiB expanded or 1,000 entries are saved but not unpacked.
+Headless cache directories use mode `0700` and files use `0600`, including unpacked files.
 With the variable unset, interactive downloads are unchanged. Downloading never changes Zendesk.
 
 ## Prompts

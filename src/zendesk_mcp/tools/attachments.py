@@ -2,12 +2,15 @@ import base64
 import io
 import json
 import os
+import shutil
 import tarfile
+import tempfile
 import zipfile
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, BinaryIO, TypeVar
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -138,6 +141,51 @@ def _confine(path: Path, root: Path | None, what: str) -> Path:
     return real
 
 
+def _private_mkdir(path: Path, root: Path) -> None:
+    if not path.parent.is_dir() or (path != root and path.is_relative_to(root)):
+        _private_mkdir(path.parent, root)
+    path.mkdir(mode=0o700, exist_ok=True)
+    if path.is_relative_to(root):
+        _confine(path, root, "the download directory")
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _private_file(path: Path):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            os.fchmod(stream.fileno(), 0o600)
+            yield stream
+            stream.close()
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
+def _extract_private_member(
+    unpack_dir: Path, root: Path, name: str, source: Callable[[], BinaryIO | None] | None,
+) -> None:
+    path = unpack_dir / name
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        return
+    _confine(path, unpack_dir, "the archive member")
+    if source is None:
+        _private_mkdir(path, root)
+    else:
+        _private_mkdir(path.parent, root)
+        _confine(path, unpack_dir, "the archive member")
+        member = source()
+        if member is None:
+            raise ToolError("Archive member has no file data")
+        with member, _private_file(path) as stream:
+            shutil.copyfileobj(member, stream)
+
+
 def _headless_cache_filename(url: str, filename: str) -> str:
     prefix = sha256(url.encode()).hexdigest()[:24] + "-"
     if len(filename.encode()) + len(prefix) <= _CACHE_FILENAME_MAX_BYTES:
@@ -184,14 +232,20 @@ def _download_attachment_data(
                 "zendesk_list_attachments give it)"
             )
     target_dir = _confine(target_dir, root, "the download directory")
+    private = root is not None and headless_read_only()
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
-    if headless_read_only():
+    if private:
         safe_filename = _headless_cache_filename(attachment_url, safe_filename)
     dest = target_dir / safe_filename
     _confine(dest, root, "the download")
     try:
-        target_dir.mkdir(parents=True, exist_ok=True)
+        if private:
+            _private_mkdir(target_dir, root)
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+    except ToolError:
+        raise
     except Exception as e:
         raise ToolError(f"Cannot create the download directory: {e}") from e
     _confine(dest, root, "the download")
@@ -207,7 +261,11 @@ def _download_attachment_data(
     except Exception as e:
         raise ToolError(f"Download failed: {api_error_message(e)}") from e
     try:
-        dest.write_bytes(response.content)
+        if private:
+            with _private_file(dest) as stream:
+                stream.write(response.content)
+        else:
+            dest.write_bytes(response.content)
     except Exception as e:
         raise ToolError(f"Downloaded, but could not write {dest}: {e}") from e
 
@@ -287,14 +345,21 @@ def _bounded_archive_members(
 
 def _handle_zip(dest: Path, root: Path | None = None) -> str:
     unpack_dir = dest.parent / dest.stem
-    _confine(unpack_dir, root, "the archive contents into")
+    private = root is not None and headless_read_only()
+    resolved = _confine(unpack_dir, root, "the archive contents into")
+    if private:
+        unpack_dir = resolved
     try:
         with zipfile.ZipFile(dest) as zf:
-            if headless_read_only():
+            if private:
                 _bounded_archive_members(zf.infolist(), lambda member: member.file_size)
             safe_members = _safe_zip_members(zf, unpack_dir)
             for member in safe_members:
-                zf.extract(member, unpack_dir)
+                if private:
+                    source = None if member.is_dir() else lambda: zf.open(member)
+                    _extract_private_member(unpack_dir, root, member.filename, source)
+                else:
+                    zf.extract(member, unpack_dir)
         return _archive_summary(dest, unpack_dir)
     except Exception as e:
         # Not only BadZipFile: an encrypted member (RuntimeError), a compression method zipfile
@@ -304,12 +369,15 @@ def _handle_zip(dest: Path, root: Path | None = None) -> str:
 
 def _handle_tar(dest: Path, root: Path | None = None) -> str:
     unpack_dir = dest.parent / dest.stem.replace(".tar", "")
-    _confine(unpack_dir, root, "the archive contents into")
+    private = root is not None and headless_read_only()
+    resolved = _confine(unpack_dir, root, "the archive contents into")
+    if private:
+        unpack_dir = resolved
     try:
         with tarfile.open(dest) as tf:
             members = (
                 _bounded_archive_members(tf, lambda member: member.size)
-                if headless_read_only() else tf.getmembers()
+                if private else tf.getmembers()
             )
             safe_members = [
                 m for m in members
@@ -322,7 +390,12 @@ def _handle_tar(dest: Path, root: Path | None = None) -> str:
                 safe_members = [m for m in safe_members if m.isfile() or m.isdir()]
                 if hasattr(tarfile, "data_filter"):
                     extract_kwargs["filter"] = "data"
-            tf.extractall(unpack_dir, members=safe_members, **extract_kwargs)
+            if private:
+                for member in safe_members:
+                    source = None if member.isdir() else lambda: tf.extractfile(member)
+                    _extract_private_member(unpack_dir, root, member.name, source)
+            else:
+                tf.extractall(unpack_dir, members=safe_members, **extract_kwargs)
         return _archive_summary(dest, unpack_dir)
     except Exception as e:
         # Not only TarError: a truncated gzip stream (EOFError, zlib.error), a disk error.
