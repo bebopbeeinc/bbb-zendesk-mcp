@@ -194,6 +194,7 @@ def _download_attachment_data(
         target_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         raise ToolError(f"Cannot create the download directory: {e}") from e
+    _confine(dest, root, "the download")
 
     try:
         if root is not None:

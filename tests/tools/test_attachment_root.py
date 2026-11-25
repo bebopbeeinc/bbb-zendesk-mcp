@@ -152,6 +152,25 @@ def test_a_symlinked_ticket_dir_pointing_outside_is_refused(root, outside, fetch
     assert list(outside.iterdir()) == []
 
 
+def test_headless_refuses_directory_swapped_to_a_symlink_during_mkdir(headless_cache, outside, fetch, monkeypatch):
+    headless_cache.mkdir(parents=True)
+    target = headless_cache / "12345"
+    mkdir = Path.mkdir
+
+    def mkdir_after_swap(path, *args, **kwargs):
+        if path == target:
+            path.symlink_to(outside, target_is_directory=True)
+        return mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_after_swap)
+    with pytest.raises(ToolError, match=f"outside {ATTACHMENT_ROOT_ENV}"):
+        _download(fetch)
+
+    assert target.is_symlink()
+    fetch.assert_not_called()
+    assert list(outside.iterdir()) == []
+
+
 def test_a_file_that_is_a_symlink_pointing_outside_is_refused(root, outside, fetch):
     victim = outside / "victim.txt"
     victim.write_text("keep me")
