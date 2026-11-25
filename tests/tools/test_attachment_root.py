@@ -393,6 +393,20 @@ def test_headless_preserves_both_uploads_when_filenames_match(headless_cache, fe
     assert [path.read_bytes() for path in paths] == originals
 
 
+def test_headless_truncates_a_long_utf8_stem_without_losing_the_extension(headless_cache, fetch):
+    filename = "界" * 82 + ".txt"
+    assert len(filename.encode()) == 250
+    result = json.loads(_download(fetch, filename))
+    saved = Path(result["cached_path"])
+    prefix, stem = saved.stem.split("-", 1)
+    assert saved.parent == headless_cache / "12345"
+    assert len(prefix) == 24
+    assert stem == "界" * 75
+    assert len(saved.name.encode()) == 254
+    assert saved.suffix == ".txt"
+    assert saved.read_bytes() == b"hello"
+
+
 def test_a_redirect_back_onto_the_account_carries_no_token(root, web):
     api = "https://example.zendesk.com/api/v2/users.json"
     web.pages = {

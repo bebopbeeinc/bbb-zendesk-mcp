@@ -68,6 +68,7 @@ def _list_attachments_data(ticket_id: int) -> str:
 
 _TEXT_EXTENSIONS = {".log", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".sh", ".py", ".go", ".md"}
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+_CACHE_FILENAME_MAX_BYTES = 255
 
 # Bounds applied to tool response payloads to stay within MCP transport limits.
 _ARCHIVE_FILE_LIST_CAP = 500
@@ -137,6 +138,20 @@ def _confine(path: Path, root: Path | None, what: str) -> Path:
     return real
 
 
+def _headless_cache_filename(url: str, filename: str) -> str:
+    prefix = sha256(url.encode()).hexdigest()[:24] + "-"
+    if len(filename.encode()) + len(prefix) <= _CACHE_FILENAME_MAX_BYTES:
+        return prefix + filename
+
+    extension = filename[-7:] if filename.lower().endswith(".tar.gz") else Path(filename).suffix
+    stem = filename.removesuffix(extension)
+    stem_budget = _CACHE_FILENAME_MAX_BYTES - len(prefix) - len(extension.encode())
+    if stem_budget < 0:
+        raise ToolError("Attachment filename extension is too long to cache")
+    stem = stem.encode()[:stem_budget].decode("utf-8", errors="ignore")
+    return prefix + stem + extension
+
+
 def _download_attachment_data(
     attachment_url: str,
     filename: str,
@@ -172,8 +187,7 @@ def _download_attachment_data(
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
     if headless_read_only():
-        url_key = sha256(attachment_url.encode()).hexdigest()[:24]
-        safe_filename = f"{url_key}-{safe_filename}"
+        safe_filename = _headless_cache_filename(attachment_url, safe_filename)
     dest = target_dir / safe_filename
     _confine(dest, root, "the download")
     try:
