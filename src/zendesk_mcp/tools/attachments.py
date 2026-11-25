@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, BinaryIO, TypeVar
 from urllib.parse import unquote, urlparse
 
@@ -72,6 +73,7 @@ def _list_attachments_data(ticket_id: int) -> str:
 _TEXT_EXTENSIONS = {".log", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".sh", ".py", ".go", ".md"}
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 _CACHE_FILENAME_MAX_BYTES = 255
+_UMASK_LOCK = Lock()
 
 # Bounds applied to tool response payloads to stay within MCP transport limits.
 _ARCHIVE_FILE_LIST_CAP = 500
@@ -141,11 +143,22 @@ def _confine(path: Path, root: Path | None, what: str) -> Path:
     return real
 
 
+@contextmanager
+def _private_umask():
+    with _UMASK_LOCK:
+        previous = os.umask(0o077)
+        try:
+            yield
+        finally:
+            os.umask(previous)
+
+
 def _private_mkdir(path: Path, root: Path) -> None:
     if not path.parent.is_dir() or (path != root and path.is_relative_to(root)):
         _private_mkdir(path.parent, root)
     try:
-        path.mkdir(mode=0o700)
+        with _private_umask():
+            path.mkdir(mode=0o700)
     except FileExistsError:
         if path.is_relative_to(root):
             _confine(path, root, "the download directory")
@@ -173,7 +186,9 @@ def _private_mkdir(path: Path, root: Path) -> None:
 
 @contextmanager
 def _private_file(path: Path):
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+    with _private_umask():
+        stream = tempfile.NamedTemporaryFile(dir=path.parent, delete=False)
+    with stream:
         staged = Path(stream.name)
         try:
             fchmod = getattr(os, "fchmod", None)
