@@ -145,20 +145,8 @@ def _private_mkdir(path: Path, root: Path) -> None:
     if not path.parent.is_dir() or (path != root and path.is_relative_to(root)):
         _private_mkdir(path.parent, root)
     path.mkdir(mode=0o700, exist_ok=True)
-    resolved = path
     if path.is_relative_to(root):
-        resolved = _confine(path, root, "the download directory")
-    directory_flag = getattr(os, "O_DIRECTORY", None)
-    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
-    fchmod = getattr(os, "fchmod", None)
-    if directory_flag is None or nofollow_flag is None or fchmod is None:
-        resolved.chmod(0o700)
-        return
-    fd = os.open(path, os.O_RDONLY | directory_flag | nofollow_flag)
-    try:
-        fchmod(fd, 0o700)
-    finally:
-        os.close(fd)
+        _confine(path, root, "the download directory")
 
 
 @contextmanager

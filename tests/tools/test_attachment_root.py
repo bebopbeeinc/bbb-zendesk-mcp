@@ -209,10 +209,9 @@ def umask_022():
         os.umask(previous)
 
 
-def test_headless_download_makes_existing_cache_and_new_directories_private(headless_cache, fetch, umask_022):
-    headless_cache.mkdir(parents=True)
-    headless_cache.chmod(0o755)
-    batch = headless_cache / "batch"
+def test_headless_download_keeps_existing_modes_and_creates_private_paths(headless_cache, root, fetch, umask_022):
+    root.mkdir(mode=0o755)
+    batch = root / "batch"
     batch.mkdir(mode=0o755)
     dest_dir = batch / "nested" / "ticket"
     result = json.loads(_download(fetch, dest_dir=str(dest_dir)))
@@ -223,7 +222,9 @@ def test_headless_download_makes_existing_cache_and_new_directories_private(head
     assert Path(result["cached_path"]) == saved
     assert saved.read_bytes() == b"updated"
     assert stat.S_IMODE(saved.stat().st_mode) == 0o600
-    for directory in (headless_cache, batch, dest_dir.parent, dest_dir):
+    for directory in (root, batch):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+    for directory in (dest_dir.parent, dest_dir):
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
 
 
