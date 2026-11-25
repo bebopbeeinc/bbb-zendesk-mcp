@@ -619,3 +619,24 @@ def test_a_redirect_loop_is_refused(root, web):
     from zendesk_mcp.tools.attachments import _download_attachment_data
     with pytest.raises(ToolError, match="redirects"):
         _download_attachment_data(_UPLOAD, "a.txt", 1001)
+
+
+@pytest.mark.parametrize("redirects", [5, 6])
+def test_confined_download_redirect_limit(root, web, redirects):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+
+    urls = [_UPLOAD] + [f"https://p23.zdusercontent.com/hop/{hop}" for hop in range(1, redirects + 1)]
+    web.pages = {
+        source: (302, {"Location": target}, b"") for source, target in zip(urls, urls[1:])
+    }
+    web.pages[urls[-1]] = (200, {}, b"hello")
+
+    if redirects == 5:
+        result = json.loads(_download_attachment_data(_UPLOAD, "notes.txt", 1001))
+        assert result["content"] == "hello"
+    else:
+        with pytest.raises(ToolError, match="more than 5 redirects"):
+            _download_attachment_data(_UPLOAD, "notes.txt", 1001)
+        assert not (root / "1001" / "notes.txt").exists()
+
+    assert web.hops == [(_UPLOAD, "Bearer tok-SECRET")] + [(url, None) for url in urls[1:6]]

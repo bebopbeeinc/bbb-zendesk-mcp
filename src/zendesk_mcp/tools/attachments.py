@@ -120,9 +120,11 @@ def _fetch_confined(url: str) -> httpx.Response:
     """GET an attachment, following redirects by hand: the bearer token goes to the first,
     validated hop only, and every later hop must stay on https."""
     response = auth.request("GET", url, follow_redirects=False)
-    for _ in range(_MAX_REDIRECTS):
+    for redirects in range(_MAX_REDIRECTS + 1):
         if response.status_code not in _REDIRECT_STATUSES or not response.headers.get("location"):
             return response
+        if redirects == _MAX_REDIRECTS:
+            break
         location = response.headers["location"]
         target = response.url.join(location)
         if target.scheme != "https":
