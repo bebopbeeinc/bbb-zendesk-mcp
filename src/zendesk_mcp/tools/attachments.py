@@ -82,7 +82,7 @@ _PREVIEW_MAX_PIXELS = 40_000_000
 # first: resize() falls back to nearest-neighbour for "P" and averages palette indices for "PA".
 _RESAMPLABLE_MODES = ("RGB", "RGBA", "L", "LA")
 
-# With ZENDESK_MCP_ATTACHMENT_ROOT set, the only paths a download may fetch on the account host:
+# In confined mode, the only paths a download may fetch on the account host:
 # a comment attachment's content_url and a Messaging upload's URL. The bearer token reaches any
 # path on that host, /api/v2 included, so in that mode the address is checked, not trusted.
 _ATTACHMENT_PATH_PREFIXES = ("/attachments/token/", "/sc/attachments/")
@@ -141,6 +141,8 @@ def _download_attachment_data(
         root = attachment_root()
         if dest_dir:
             target_dir = Path(dest_dir).expanduser()
+        elif root is not None:
+            target_dir = root / str(ticket_id)
         else:
             target_dir = attachment_cache_dir(ticket_id)
     except AttachmentRootError as e:
@@ -155,8 +157,8 @@ def _download_attachment_data(
             raise ToolError(f"Cannot read the Zendesk config: {e}") from e
         if not _is_attachment_address(attachment_url, subdomain):
             raise ToolError(
-                f"Refusing to fetch attachment_url: with {ATTACHMENT_ROOT_ENV} set, only an "
-                "attachment's address on the configured Zendesk host is fetched (a path under "
+                "Refusing to fetch attachment_url: confined downloads only fetch an "
+                "attachment's address on the configured Zendesk host (a path under "
                 f"{' or '.join(_ATTACHMENT_PATH_PREFIXES)}, as zendesk_get_comments and "
                 "zendesk_list_attachments give it)"
             )
@@ -396,14 +398,11 @@ def _handle_image(dest: Path, size_bytes: int) -> CallToolResult:
     )
 
 
-def register_attachment_tools(mcp, read_only: bool = False) -> None:
+def register_attachment_tools(mcp) -> None:
     @mcp.tool()
     def zendesk_list_attachments(ticket_id: int) -> str:
         """List all attachments across all comments for a Zendesk ticket. Returns filename, content type, size, and download URL for each. Files a customer sent through Zendesk Messaging (Messenger, in-app chat) are not comment attachments; they are listed from the transcript with "source": "messaging_transcript" and the uploader and time when the transcript names them."""
         return _list_attachments_data(ticket_id)
-
-    if read_only:
-        return
 
     @mcp.tool()
     def zendesk_download_attachment(
@@ -412,5 +411,5 @@ def register_attachment_tools(mcp, read_only: bool = False) -> None:
         ticket_id: int,
         dest_dir: str | None = None,
     ) -> Annotated[CallToolResult, str]:
-        """Download a Zendesk attachment or Messaging upload. Obtain attachment_url and filename from zendesk_list_attachments. ticket_id is required for cache organization. Optional dest_dir overrides the default cache location; the file is written there and (for archives) extracted alongside it. Archives return a file list and unpack_dir — read individual files with your normal file tools. PDFs return up to ~500KB of extracted text. Images return the picture itself (a downscaled copy, long edge at most 1568 px) and its metadata; the original is saved at cached_path."""
+        """Download a Zendesk attachment or Messaging upload without changing Zendesk. Obtain attachment_url and filename from zendesk_list_attachments or zendesk_get_comments. ticket_id is required for cache organization. Headless OAuth accepts only attachment URLs on the configured Zendesk account and writes only inside the attachment cache root. Optional dest_dir overrides the default cache location within any configured root. Archives return a file list and unpack_dir. PDFs return up to ~500KB of extracted text. Images return the picture itself (a downscaled copy, long edge at most 1568 px) and its metadata; the original is saved at cached_path."""
         return _download_attachment_data(attachment_url, filename, ticket_id, dest_dir)

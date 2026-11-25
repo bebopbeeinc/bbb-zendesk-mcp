@@ -8,9 +8,14 @@ The server also requests exactly `read`, refuses write methods locally, and
 advertises only read tools. It never runs browser setup, reads an existing
 interactive grant, or saves credentials/tokens to disk in this mode.
 
-Attachment listing remains available, but attachment downloading is hidden to
-prevent local file writes. Git-Zen link lookup is also hidden: this mode does not
-read the interactive configuration containing its required custom-field ID.
+Attachment listing and downloading are available without expanding the OAuth scope.
+Downloads can start only on the configured Zendesk account, at a comment attachment
+or Messaging upload URL. The bearer token is sent only to the initial URL;
+redirects must use HTTPS. Downloads and any archive extraction are confined to
+`~/.cache/zendesk-mcp/attachments` unless the server operator sets
+`ZENDESK_MCP_ATTACHMENT_ROOT` to a different absolute directory. Image downloads
+return an MCP image preview. Git-Zen link lookup is hidden: this mode does not read
+the interactive configuration containing its required custom-field ID.
 If a token is rejected again after renewal, check or rotate the environment's
 client credentials, confirm the client's allowed `read` scope, and restart the
 server; interactive `setup` is not supported in this mode.
@@ -70,9 +75,11 @@ way to limit this connection; the `read` scope is the write restriction.
 
 ## Install command and Bot attachment (do not run until authorized)
 
-The immutable implementation pin below includes the headless read-only fixes.
-Install only after PR review is complete; do **not** use the historical revision above. On the current
-Linux Devin image, the STDIO launch command is:
+The immutable pin below is the baseline for headless OAuth. It predates headless
+attachment downloads. To enable them, replace the pin in the launch command with a
+reviewed revision that includes this feature; no new secrets or scopes are needed.
+Do **not** use the historical revision above. On the current Linux Devin image,
+the baseline STDIO launch command is:
 
 ```sh
 /usr/bin/env ZENDESK_AUTH_MODE=client_credentials /home/ubuntu/.local/bin/uvx --from git+https://github.com/bebopbeeinc/bbb-zendesk-mcp@0a41905a73917eae517f4dd9c368966d02e46a41 zendesk-mcp
@@ -154,10 +161,11 @@ MCP secret mapping is needed for managed HTTP OAuth credentials.
 ## Verification boundary
 
 Tests for headless mode mock OAuth and Zendesk responses. They cover renewal,
-retry, scope rejection, no credential-file use, read-only tool discovery, and
-both direct and Zenpy HTTP write prevention. Live authentication and ticket
-reads require separate authorization after setup. This work does not install
-or connect any MCP, create an OAuth client, read Zendesk data, or modify tickets.
+retry, scope rejection, no credential-file use, read-only tool discovery,
+confined attachment downloads, and both direct and Zenpy HTTP write prevention.
+Live authentication and ticket reads require separate authorization after setup.
+This work does not install or connect any MCP, create an OAuth client, read Zendesk data,
+or modify tickets.
 The build Mac's existing community-desk remains unchanged. Pilot replies remain
 drafts only, and this connection does not post to Slack or `#community`.
 

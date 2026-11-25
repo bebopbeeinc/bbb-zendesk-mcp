@@ -69,6 +69,7 @@ def save_config(data: dict, path: Path | None = None) -> None:
 
 
 ATTACHMENT_ROOT_ENV = "ZENDESK_MCP_ATTACHMENT_ROOT"
+_DEFAULT_ATTACHMENT_CACHE = "~/.cache/zendesk-mcp/attachments"
 
 
 class AttachmentRootError(ValueError):
@@ -78,12 +79,14 @@ class AttachmentRootError(ValueError):
 def attachment_root() -> Path | None:
     """The directory every attachment write must stay inside, symlinks resolved.
 
-    None when ZENDESK_MCP_ATTACHMENT_ROOT is unset. Set but blank or relative is an error
-    rather than "unset", so a misconfigured root never silently writes anywhere.
+    When unset, use the default cache in headless mode and no confinement otherwise.
+    A blank or relative setting is an error.
     """
     raw = os.environ.get(ATTACHMENT_ROOT_ENV)
     if raw is None:
-        return None
+        if not headless_read_only():
+            return None
+        raw = _DEFAULT_ATTACHMENT_CACHE
     root = Path(raw.strip()).expanduser()
     if not raw.strip() or not root.is_absolute():
         raise AttachmentRootError(
@@ -97,5 +100,5 @@ def attachment_cache_dir(ticket_id: int, config_file: Path | None = None) -> Pat
     if root is not None:
         return root / str(ticket_id)
     cfg = load_config(config_file)
-    base = cfg.get("attachment_cache_dir", "~/.cache/zendesk-mcp/attachments")
+    base = cfg.get("attachment_cache_dir", _DEFAULT_ATTACHMENT_CACHE)
     return Path(base).expanduser() / str(ticket_id)

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from PIL import Image
 
 from zendesk_mcp.config import ATTACHMENT_ROOT_ENV, attachment_cache_dir
 from zendesk_mcp.errors import ToolError
@@ -49,6 +50,14 @@ def root(tmp_path, monkeypatch):
     path = tmp_path / "root"
     monkeypatch.setenv(ATTACHMENT_ROOT_ENV, str(path))
     return Path(os.path.realpath(path))
+
+
+@pytest.fixture
+def headless_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZENDESK_AUTH_MODE", "client_credentials")
+    monkeypatch.setenv("ZENDESK_SUBDOMAIN", "example")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path / ".cache" / "zendesk-mcp" / "attachments"
 
 
 @pytest.fixture
@@ -222,12 +231,28 @@ _TOKEN_URL = "https://example.zendesk.com/attachments/token/TESTtoken/?name=IMG_
     "https://p23.zdusercontent.com/attachment/1/a.jpeg",
 ], ids=["users-search", "users", "dot-dot", "encoded-dot-dot", "encoded-upper", "backslash",
         "attachment-id", "double-slash", "other-account", "http", "signed-host"])
-def test_a_non_attachment_address_is_refused_before_anything_is_fetched(root, fetch, url):
+@pytest.mark.parametrize("root_fixture", ["root", "headless_cache"])
+def test_a_non_attachment_address_is_refused_before_anything_is_fetched(request, root_fixture, fetch, url):
     from zendesk_mcp.tools.attachments import _download_attachment_data
+    root = request.getfixturevalue(root_fixture)
     with pytest.raises(ToolError, match="Refusing to fetch attachment_url"):
         _download_attachment_data(url, "u.json", 1001)
     fetch.assert_not_called()
     assert not (root / "1001" / "u.json").exists()
+
+
+def test_headless_default_root_refuses_a_destination_outside_it(headless_cache, outside, fetch):
+    with pytest.raises(ToolError, match=f"outside {ATTACHMENT_ROOT_ENV}"):
+        _download(fetch, dest_dir=str(outside))
+    fetch.assert_not_called()
+    assert not headless_cache.exists()
+    assert not list(outside.iterdir())
+
+
+def test_headless_honors_an_explicit_root(headless_cache, root, fetch):
+    result = json.loads(_download(fetch, ticket_id=1001))
+    assert result["cached_path"] == str(root / "1001" / "notes.txt")
+    assert not headless_cache.exists()
 
 
 @pytest.mark.parametrize("url", [_UPLOAD, _TOKEN_URL])
@@ -287,6 +312,27 @@ def test_the_token_goes_to_the_first_hop_only(root, web):
     from zendesk_mcp.tools.attachments import _download_attachment_data
     result = json.loads(_download_attachment_data(_UPLOAD, "notes.txt", 1001))
     assert result["content"] == "hello"
+    assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (_SIGNED, None)]
+
+
+def test_headless_messaging_image_follows_https_redirect_without_forwarding_token(headless_cache, web):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+
+    jpeg = io.BytesIO()
+    Image.new("RGB", (16, 16)).save(jpeg, "JPEG")
+    web.pages = {
+        _UPLOAD: (302, {"Location": _SIGNED}, b""),
+        _SIGNED: (200, {}, jpeg.getvalue()),
+    }
+    with patch("zendesk_mcp.headless.token_config",
+               return_value={"subdomain": "example", "oauth_token": "tok-SECRET"}):
+        result = _download_attachment_data(_UPLOAD, "IMG_0001.jpeg", 1001)
+
+    meta = json.loads(result.content[0].text)
+    saved = headless_cache / "1001" / "IMG_0001.jpeg"
+    assert result.content[1].type == "image"
+    assert meta["cached_path"] == str(saved)
+    assert saved.read_bytes() == jpeg.getvalue()
     assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (_SIGNED, None)]
 
 

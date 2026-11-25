@@ -271,8 +271,10 @@ pixels gets no preview; the error names its `cached_path`, where the original is
 `~/.cache/zendesk-mcp/attachments/<ticket_id>` (or `attachment_cache_dir`/`<ticket_id>` from
 the config file). Archives are unpacked next to the file.
 
-Set `ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to confine every attachment write
-— the download and anything unpacked from an archive — to it, and the download to attachments:
+In headless OAuth mode (`ZENDESK_AUTH_MODE=client_credentials`), downloads are always confined
+to the default cache root `~/.cache/zendesk-mcp/attachments`. Set
+`ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to use a different root in headless mode
+or to enable confinement in interactive mode. With confinement:
 
 - the default location becomes `<root>/<ticket_id>`, whatever the config file says;
 - a `dest_dir`, a file, or an unpack directory whose real path (symlinks resolved) is outside
@@ -288,7 +290,7 @@ Set `ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to confine every atta
   hop must be `https`;
 - set but blank or relative is an error, never treated as unset.
 
-Unset, nothing changes. The credentials file is not an attachment and is not affected.
+With the variable unset, interactive downloads are unchanged. Downloading never changes Zendesk.
 
 ## Prompts
 
