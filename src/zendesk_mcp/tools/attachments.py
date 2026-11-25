@@ -152,10 +152,23 @@ def _private_mkdir(path: Path, root: Path) -> None:
         if not path.is_dir():
             raise
         return
-    resolved = _confine(path, root, "the download directory") if path.is_relative_to(root) else path.resolve()
-    if resolved != path:
-        raise ToolError("The download directory changed during creation")
-    path.chmod(0o700)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    fchmod = getattr(os, "fchmod", None)
+    fd = None
+    try:
+        if directory_flag is not None and nofollow_flag is not None and fchmod is not None:
+            fd = os.open(path, os.O_RDONLY | directory_flag | nofollow_flag)
+        resolved = _confine(path, root, "the download directory") if path.is_relative_to(root) else path.resolve()
+        if resolved != path or (fd is not None and not os.path.samestat(os.fstat(fd), path.lstat())):
+            raise ToolError("The download directory changed during creation")
+        if fd is None:
+            path.chmod(0o700)
+        else:
+            fchmod(fd, 0o700)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 @contextmanager

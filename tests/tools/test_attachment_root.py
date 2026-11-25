@@ -172,6 +172,36 @@ def test_headless_refuses_directory_swapped_to_a_symlink_during_mkdir(headless_c
     assert list(outside.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    not all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "fchmod")),
+    reason="requires POSIX directory descriptors",
+)
+@pytest.mark.parametrize("swap_after_open", [False, True])
+def test_headless_directory_swap_cannot_change_outside_mode(
+    headless_cache, outside, fetch, monkeypatch, swap_after_open,
+):
+    headless_cache.mkdir(parents=True)
+    target = headless_cache / "12345"
+    outside.chmod(0o755)
+    open_dir = os.open
+
+    def open_with_swap(path, *args, **kwargs):
+        if path != target:
+            return open_dir(path, *args, **kwargs)
+        fd = open_dir(path, *args, **kwargs) if swap_after_open else None
+        target.rmdir()
+        target.symlink_to(outside, target_is_directory=True)
+        return open_dir(path, *args, **kwargs) if fd is None else fd
+
+    monkeypatch.setattr(os, "open", open_with_swap)
+    with pytest.raises(ToolError):
+        _download(fetch)
+
+    assert target.is_symlink()
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+    fetch.assert_not_called()
+
+
 def test_a_file_that_is_a_symlink_pointing_outside_is_refused(root, outside, fetch):
     victim = outside / "victim.txt"
     victim.write_text("keep me")
