@@ -121,16 +121,17 @@ def _fetch_confined(url: str) -> httpx.Response:
     raise ToolError(f"Download failed: more than {_MAX_REDIRECTS} redirects")
 
 
-def _confine(path: Path, root: Path | None, what: str) -> None:
-    """Refuse a write whose real path (symlinks resolved) leaves the attachment root."""
+def _confine(path: Path, root: Path | None, what: str) -> Path:
+    """Resolve a confined path and refuse it if it leaves the attachment root."""
     if root is None:
-        return
+        return path
     real = Path(os.path.realpath(path))
     if not real.is_relative_to(root):
         raise ToolError(
             f"Refusing to write {what} {path}: it resolves to {real}, outside "
             f"{ATTACHMENT_ROOT_ENV} ({root})"
         )
+    return real
 
 
 def _download_attachment_data(
@@ -164,19 +165,18 @@ def _download_attachment_data(
                 f"{' or '.join(_ATTACHMENT_PATH_PREFIXES)}, as zendesk_get_comments and "
                 "zendesk_list_attachments give it)"
             )
-    _confine(target_dir, root, "the download directory")
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        raise ToolError(f"Cannot create the download directory: {e}") from e
+    target_dir = _confine(target_dir, root, "the download directory")
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
     if headless_read_only():
         url_key = sha256(attachment_url.encode()).hexdigest()[:24]
         safe_filename = f"{url_key}-{safe_filename}"
     dest = target_dir / safe_filename
-    # Checked again now the directory exists, and for the file itself: either may be a symlink.
     _confine(dest, root, "the download")
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise ToolError(f"Cannot create the download directory: {e}") from e
 
     try:
         if root is not None:

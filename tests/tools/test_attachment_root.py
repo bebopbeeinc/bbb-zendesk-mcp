@@ -107,12 +107,19 @@ def test_root_reached_through_a_symlink_is_resolved(tmp_path, monkeypatch, fetch
     monkeypatch.setenv(ATTACHMENT_ROOT_ENV, str(link))
     result = json.loads(_download(fetch, dest_dir=str(link / "7")))
     assert (real / "7" / "notes.txt").read_bytes() == b"hello"
-    assert result["cached_path"] == str(link / "7" / "notes.txt")
+    assert result["cached_path"] == str(real / "7" / "notes.txt")
 
 
 def test_dest_dir_inside_the_root_is_allowed(root, fetch):
     result = json.loads(_download(fetch, dest_dir=str(root / "work" / "1002")))
     assert result["cached_path"] == str(root / "work" / "1002" / "notes.txt")
+
+
+def test_dest_dir_only_creates_directories_on_the_resolved_path(root, outside, fetch):
+    dest_dir = outside / "unneeded" / ".." / ".." / root.name / "1002"
+    result = json.loads(_download(fetch, dest_dir=str(dest_dir)))
+    assert result["cached_path"] == str(root / "1002" / "notes.txt")
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize("make_dest", [
