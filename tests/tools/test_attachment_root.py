@@ -251,7 +251,9 @@ def test_headless_default_root_refuses_a_destination_outside_it(headless_cache, 
 
 def test_headless_honors_an_explicit_root(headless_cache, root, fetch):
     result = json.loads(_download(fetch, ticket_id=1001))
-    assert result["cached_path"] == str(root / "1001" / "notes.txt")
+    saved = Path(result["cached_path"])
+    assert saved.parent == root / "1001"
+    assert saved.name.endswith("-notes.txt")
     assert not headless_cache.exists()
 
 
@@ -329,11 +331,32 @@ def test_headless_messaging_image_follows_https_redirect_without_forwarding_toke
         result = _download_attachment_data(_UPLOAD, "IMG_0001.jpeg", 1001)
 
     meta = json.loads(result.content[0].text)
-    saved = headless_cache / "1001" / "IMG_0001.jpeg"
+    saved = Path(meta["cached_path"])
     assert result.content[1].type == "image"
-    assert meta["cached_path"] == str(saved)
+    assert saved.parent == headless_cache / "1001"
+    assert saved.name.endswith("-IMG_0001.jpeg")
     assert saved.read_bytes() == jpeg.getvalue()
     assert web.hops == [(_UPLOAD, "Bearer tok-SECRET"), (_SIGNED, None)]
+
+
+def test_headless_preserves_both_uploads_when_filenames_match(headless_cache, fetch):
+    from zendesk_mcp.tools.attachments import _download_attachment_data
+
+    filename = "pickedMedia.jpg"
+    paths = []
+    originals = []
+    for upload_id, color in [("one", "red"), ("two", "blue")]:
+        url = f"https://example.zendesk.com/sc/attachments/v2/{upload_id}/{filename}"
+        jpeg = io.BytesIO()
+        Image.new("RGB", (16, 16), color).save(jpeg, "JPEG")
+        originals.append(jpeg.getvalue())
+        fetch.return_value = MagicMock(content=originals[-1])
+        result = _download_attachment_data(url, filename, 1001)
+        paths.append(Path(json.loads(result.content[0].text)["cached_path"]))
+
+    assert paths[0] != paths[1]
+    assert all(path.parent == headless_cache / "1001" for path in paths)
+    assert [path.read_bytes() for path in paths] == originals
 
 
 def test_a_redirect_back_onto_the_account_carries_no_token(root, web):

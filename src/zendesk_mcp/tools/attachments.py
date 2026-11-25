@@ -4,6 +4,7 @@ import json
 import os
 import tarfile
 import zipfile
+from hashlib import sha256
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import unquote, urlparse
@@ -19,6 +20,7 @@ from zendesk_mcp.config import (
     AttachmentRootError,
     attachment_cache_dir,
     attachment_root,
+    headless_read_only,
     load_config,
 )
 from zendesk_mcp import auth
@@ -169,6 +171,9 @@ def _download_attachment_data(
         raise ToolError(f"Cannot create the download directory: {e}") from e
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
+    if headless_read_only():
+        url_key = sha256(attachment_url.encode()).hexdigest()[:24]
+        safe_filename = f"{url_key}-{safe_filename}"
     dest = target_dir / safe_filename
     # Checked again now the directory exists, and for the file itself: either may be a symlink.
     _confine(dest, root, "the download")

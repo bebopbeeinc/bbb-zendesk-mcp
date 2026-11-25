@@ -272,7 +272,8 @@ pixels gets no preview; the error names its `cached_path`, where the original is
 the config file). Archives are unpacked next to the file.
 
 In headless OAuth mode (`ZENDESK_AUTH_MODE=client_credentials`), downloads are always confined
-to the default cache root `~/.cache/zendesk-mcp/attachments`. Set
+to the default cache root `~/.cache/zendesk-mcp/attachments`. Cached filenames have a
+URL-derived prefix so attachments with the same filename don't overwrite each other. Set
 `ZENDESK_MCP_ATTACHMENT_ROOT` to an absolute directory to use a different root in headless mode
 or to enable confinement in interactive mode. With confinement:
 
