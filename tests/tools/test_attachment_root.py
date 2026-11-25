@@ -315,6 +315,7 @@ def test_headless_download_without_posix_permission_primitives(headless_cache, f
         assert stat.S_IMODE(saved.parent.stat().st_mode) == 0o700
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX umask and permission bits")
 @pytest.mark.parametrize("mask", [0o177, 0o377, 0o577])
 def test_headless_download_restores_directory_search_permission_under_restrictive_umask(headless_cache, fetch, mask):
     dest_dir = headless_cache / "nested" / "ticket"
