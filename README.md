@@ -293,8 +293,10 @@ or to enable confinement in interactive mode. With confinement:
 
 In headless mode, archives over 100 MiB expanded or 1,000 entries are saved but not unpacked.
 On POSIX, headless downloads create directories with mode `0700` and files with mode `0600`,
-including unpacked files. Existing directories keep their permissions. On Windows, configure
-the cache root with an ACL that restricts access to the server user.
+including unpacked files. Existing directories keep their permissions, but the cache root and
+any directories used beneath it must be owned by the server user and must not be group- or
+world-writable unless the sticky bit is set. On Windows, configure the cache root with an ACL
+that restricts access to the server user.
 With the variable unset, interactive downloads are unchanged. Downloading never changes Zendesk.
 
 ## Prompts

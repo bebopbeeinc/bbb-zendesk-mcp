@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
 import zipfile
@@ -161,7 +162,18 @@ def _private_mkdir(path: Path, root: Path) -> None:
             path.mkdir(mode=0o700)
     except FileExistsError:
         if path.is_relative_to(root):
-            _confine(path, root, "the download directory")
+            existing = _confine(path, root, "the download directory")
+            if os.name == "posix":
+                info = existing.stat()
+                if not stat.S_ISDIR(info.st_mode):
+                    raise
+                if info.st_uid != os.geteuid():
+                    raise ToolError(f"Refusing to use download directory {existing}: it is not owned by the server user")
+                if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX:
+                    raise ToolError(
+                        f"Refusing to use download directory {existing}: it is group- or world-writable without the sticky bit"
+                    )
+                return
         if not path.is_dir():
             raise
         return

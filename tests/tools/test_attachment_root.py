@@ -239,8 +239,9 @@ def umask_022():
         os.umask(previous)
 
 
-def test_headless_download_keeps_existing_modes_and_creates_private_paths(headless_cache, root, fetch, umask_022):
-    root.mkdir(mode=0o755)
+@pytest.mark.parametrize("root_mode", [0o755, 0o700])
+def test_headless_download_keeps_existing_modes_and_creates_private_paths(headless_cache, root, fetch, umask_022, root_mode):
+    root.mkdir(mode=root_mode)
     batch = root / "batch"
     batch.mkdir(mode=0o755)
     dest_dir = batch / "nested" / "ticket"
@@ -252,10 +253,53 @@ def test_headless_download_keeps_existing_modes_and_creates_private_paths(headle
     assert Path(result["cached_path"]) == saved
     assert saved.read_bytes() == b"updated"
     assert stat.S_IMODE(saved.stat().st_mode) == 0o600
-    for directory in (root, batch):
-        assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+    assert stat.S_IMODE(root.stat().st_mode) == root_mode
+    assert stat.S_IMODE(batch.stat().st_mode) == 0o755
     for directory in (dest_dir.parent, dest_dir):
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory permissions")
+@pytest.mark.parametrize("relative_dir", [".", "batch", "batch/ticket"])
+@pytest.mark.parametrize("mode", [0o775, 0o757])
+def test_headless_refuses_writable_cache_paths(headless_cache, root, fetch, relative_dir, mode):
+    unsafe = root / relative_dir
+    unsafe.mkdir(parents=True)
+    unsafe.chmod(mode)
+    dest_dir = root / "batch" / "ticket"
+
+    with pytest.raises(ToolError, match="group- or world-writable without the sticky bit") as error:
+        _download(fetch, dest_dir=str(dest_dir))
+
+    assert str(unsafe) in str(error.value)
+    assert stat.S_IMODE(unsafe.stat().st_mode) == mode
+    assert not list(unsafe.iterdir())
+    fetch.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory ownership")
+def test_headless_refuses_cache_root_owned_by_another_user(headless_cache, root, fetch, monkeypatch):
+    root.mkdir(mode=0o700)
+    uid = root.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: uid + 1)
+
+    with pytest.raises(ToolError, match="not owned by the server user") as error:
+        _download(fetch)
+
+    assert str(root) in str(error.value)
+    assert not list(root.iterdir())
+    fetch.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory permissions")
+def test_headless_accepts_owned_writable_cache_root_with_sticky_bit(headless_cache, root, fetch):
+    root.mkdir()
+    root.chmod(0o1777)
+
+    saved = Path(json.loads(_download(fetch))["cached_path"])
+
+    assert saved.read_bytes() == b"hello"
+    assert stat.S_IMODE(root.stat().st_mode) == 0o1777
 
 
 def test_headless_download_without_posix_permission_primitives(headless_cache, fetch, monkeypatch):
