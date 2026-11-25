@@ -144,9 +144,18 @@ def _confine(path: Path, root: Path | None, what: str) -> Path:
 def _private_mkdir(path: Path, root: Path) -> None:
     if not path.parent.is_dir() or (path != root and path.is_relative_to(root)):
         _private_mkdir(path.parent, root)
-    path.mkdir(mode=0o700, exist_ok=True)
-    if path.is_relative_to(root):
-        _confine(path, root, "the download directory")
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        if path.is_relative_to(root):
+            _confine(path, root, "the download directory")
+        if not path.is_dir():
+            raise
+        return
+    resolved = _confine(path, root, "the download directory") if path.is_relative_to(root) else path.resolve()
+    if resolved != path:
+        raise ToolError("The download directory changed during creation")
+    path.chmod(0o700)
 
 
 @contextmanager

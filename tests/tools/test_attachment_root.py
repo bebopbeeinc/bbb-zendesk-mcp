@@ -241,6 +241,22 @@ def test_headless_download_without_posix_permission_primitives(headless_cache, f
         assert stat.S_IMODE(saved.parent.stat().st_mode) == 0o700
 
 
+def test_headless_download_restores_directory_search_permission_under_restrictive_umask(headless_cache, fetch):
+    dest_dir = headless_cache / "nested" / "ticket"
+    previous = os.umask(0o177)
+    try:
+        result = json.loads(_download(fetch, dest_dir=str(dest_dir)))
+    finally:
+        os.umask(previous)
+
+    saved = Path(result["cached_path"])
+    assert saved.parent == dest_dir
+    assert saved.read_bytes() == b"hello"
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+    for directory in (headless_cache, dest_dir.parent, dest_dir):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
 @pytest.mark.parametrize("extension", ["zip", "tar.gz"])
 def test_headless_archives_unpack_private_files_and_directories(headless_cache, fetch, umask_022, extension):
     buf = io.BytesIO()
