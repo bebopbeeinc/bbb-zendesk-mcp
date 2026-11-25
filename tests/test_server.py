@@ -5,9 +5,15 @@ every install that resolved to the new SDK (issue #11). These tests exercise the
 import and the full decorator surface against whichever mcp version is installed.
 """
 import asyncio
+import base64
+import io
+import json
+from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
+from PIL import Image
 
 
 def test_server_module_imports():
@@ -132,11 +138,6 @@ def _download_through_the_sdk(srv, tmp_path, monkeypatch, filename, content):
 def test_an_image_download_reaches_the_client_as_an_image_block(registered_server, tmp_path, monkeypatch):
     """The picture must arrive as image content the model can see, not as base64 in text,
     which overflowed Claude Code's tool-output limit at a few hundred KB."""
-    import base64
-    import io
-    import json
-    from PIL import Image
-
     buf = io.BytesIO()
     Image.new("RGB", (3000, 2000), (10, 120, 200)).save(buf, format="JPEG")
     result = _download_through_the_sdk(registered_server, tmp_path, monkeypatch, "pickedMedia.jpg", buf.getvalue())
@@ -154,8 +155,54 @@ def test_an_image_download_reaches_the_client_as_an_image_block(registered_serve
     assert len(text.text) < 1000
 
 
+def test_headless_messaging_image_reaches_the_client_without_forwarding_the_token(tmp_path, monkeypatch):
+    from zendesk_mcp.server import FastMCP, register_all
+
+    monkeypatch.setenv("ZENDESK_AUTH_MODE", "client_credentials")
+    monkeypatch.setenv("ZENDESK_SUBDOMAIN", "example")
+    monkeypatch.setenv("ZENDESK_MCP_ATTACHMENT_ROOT", str(tmp_path))
+    srv = FastMCP("zendesk-mcp-test-headless-image")
+    register_all(srv)
+
+    filename = "pickedMedia.jpg"
+    upload = f"https://example.zendesk.com/sc/attachments/v2/c/{filename}"
+    signed = f"https://p23.zdusercontent.com/attachment/1/{filename}?token=signed"
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 12)).save(buf, "JPEG")
+    jpeg = buf.getvalue()
+    hops = []
+
+    def request(method, url, headers=None, **kwargs):
+        req = httpx.Request(method, url, headers=headers)
+        hops.append((method, str(req.url), req.headers.get("authorization"), kwargs["follow_redirects"]))
+        if str(req.url) == upload:
+            return httpx.Response(302, headers={"Location": signed}, request=req)
+        assert str(req.url) == signed
+        return httpx.Response(200, content=jpeg, request=req)
+
+    with patch("zendesk_mcp.headless.token_config",
+               return_value={"subdomain": "example", "oauth_token": "test-token"}), \
+            patch("httpx.request", side_effect=request):
+        result = asyncio.run(_call_tool(srv, "zendesk_download_attachment", {
+            "attachment_url": upload, "filename": filename, "ticket_id": 1001,
+        }))
+
+    assert not _is_error(result)
+    text, image = result.content
+    assert [text.type, image.type] == ["text", "image"]
+    meta = json.loads(text.text)
+    assert (meta["width"], meta["height"]) == (16, 12)
+    saved = Path(meta["cached_path"])
+    assert saved.parent == tmp_path.resolve() / "1001"
+    assert saved.name.endswith(f"-{filename}")
+    assert saved.read_bytes() == jpeg
+    assert _field(image, "mime_type", "mimeType") == "image/jpeg"
+    with Image.open(io.BytesIO(base64.b64decode(image.data))) as preview:
+        assert preview.size == (16, 12)
+    assert hops == [("GET", upload, "Bearer test-token", False), ("GET", signed, None, False)]
+
+
 def test_a_non_image_download_reaches_the_client_as_before(registered_server, tmp_path, monkeypatch):
-    import json
     result = _download_through_the_sdk(registered_server, tmp_path, monkeypatch, "debug.log", b"ERROR: disk full")
 
     assert not _is_error(result)

@@ -165,12 +165,12 @@ def test_only_read_tools_are_advertised_without_minting_tokens(unattended):
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert {"zendesk_get_ticket", "zendesk_get_comments", "zendesk_search_tickets",
             "zendesk_get_tickets", "zendesk_search_users", "zendesk_preview_macro",
-            "zendesk_list_attachments"} <= names
+            "zendesk_list_attachments", "zendesk_download_attachment"} <= names
     assert not names & {
         "zendesk_post_comment", "zendesk_post_internal_note", "zendesk_set_ticket_status",
         "zendesk_assign_ticket", "zendesk_update_ticket", "zendesk_create_ticket",
         "zendesk_log_time", "zendesk_add_tag", "zendesk_remove_tag", "zendesk_apply_macro",
-        "zendesk_download_attachment", "zendesk_get_git_zen_links",
+        "zendesk_get_git_zen_links",
     }
     unattended.assert_not_called()
 

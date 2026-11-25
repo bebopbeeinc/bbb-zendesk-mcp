@@ -2,10 +2,17 @@ import base64
 import io
 import json
 import os
+import shutil
+import stat
 import tarfile
+import tempfile
 import zipfile
+from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
-from typing import Annotated
+from threading import Lock
+from typing import Annotated, BinaryIO, TypeVar
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -19,6 +26,7 @@ from zendesk_mcp.config import (
     AttachmentRootError,
     attachment_cache_dir,
     attachment_root,
+    headless_read_only,
     load_config,
 )
 from zendesk_mcp import auth
@@ -65,9 +73,13 @@ def _list_attachments_data(ticket_id: int) -> str:
 
 _TEXT_EXTENSIONS = {".log", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".sh", ".py", ".go", ".md"}
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+_CACHE_FILENAME_MAX_BYTES = 255
+_UMASK_LOCK = Lock()
 
 # Bounds applied to tool response payloads to stay within MCP transport limits.
 _ARCHIVE_FILE_LIST_CAP = 500
+_HEADLESS_ARCHIVE_MAX_ENTRIES = 1_000
+_HEADLESS_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024
 _PDF_TEXT_CAP_BYTES = 500_000
 # An image comes back as an image block the model can see: a copy no larger than the
 # long edge vision models use, encoded under a byte budget. The original stays on disk.
@@ -82,7 +94,7 @@ _PREVIEW_MAX_PIXELS = 40_000_000
 # first: resize() falls back to nearest-neighbour for "P" and averages palette indices for "PA".
 _RESAMPLABLE_MODES = ("RGB", "RGBA", "L", "LA")
 
-# With ZENDESK_MCP_ATTACHMENT_ROOT set, the only paths a download may fetch on the account host:
+# In confined mode, the only paths a download may fetch on the account host:
 # a comment attachment's content_url and a Messaging upload's URL. The bearer token reaches any
 # path on that host, /api/v2 included, so in that mode the address is checked, not trusted.
 _ATTACHMENT_PATH_PREFIXES = ("/attachments/token/", "/sc/attachments/")
@@ -108,9 +120,11 @@ def _fetch_confined(url: str) -> httpx.Response:
     """GET an attachment, following redirects by hand: the bearer token goes to the first,
     validated hop only, and every later hop must stay on https."""
     response = auth.request("GET", url, follow_redirects=False)
-    for _ in range(_MAX_REDIRECTS):
+    for redirects in range(_MAX_REDIRECTS + 1):
         if response.status_code not in _REDIRECT_STATUSES or not response.headers.get("location"):
             return response
+        if redirects == _MAX_REDIRECTS:
+            break
         location = response.headers["location"]
         target = response.url.join(location)
         if target.scheme != "https":
@@ -119,16 +133,121 @@ def _fetch_confined(url: str) -> httpx.Response:
     raise ToolError(f"Download failed: more than {_MAX_REDIRECTS} redirects")
 
 
-def _confine(path: Path, root: Path | None, what: str) -> None:
-    """Refuse a write whose real path (symlinks resolved) leaves the attachment root."""
+def _confine(path: Path, root: Path | None, what: str) -> Path:
+    """Resolve a confined path and refuse it if it leaves the attachment root."""
     if root is None:
-        return
+        return path
     real = Path(os.path.realpath(path))
     if not real.is_relative_to(root):
         raise ToolError(
             f"Refusing to write {what} {path}: it resolves to {real}, outside "
             f"{ATTACHMENT_ROOT_ENV} ({root})"
         )
+    return real
+
+
+@contextmanager
+def _private_umask():
+    with _UMASK_LOCK:
+        previous = os.umask(0o077)
+        try:
+            yield
+        finally:
+            os.umask(previous)
+
+
+def _private_mkdir(path: Path, root: Path) -> None:
+    if not path.parent.is_dir() or (path != root and path.is_relative_to(root)):
+        _private_mkdir(path.parent, root)
+    try:
+        with _private_umask():
+            path.mkdir(mode=0o700)
+    except FileExistsError:
+        if path.is_relative_to(root):
+            existing = _confine(path, root, "the download directory")
+            if os.name == "posix":
+                info = existing.stat()
+                if not stat.S_ISDIR(info.st_mode):
+                    raise
+                if info.st_uid != os.geteuid():
+                    raise ToolError(f"Refusing to use download directory {existing}: it is not owned by the server user")
+                if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX:
+                    raise ToolError(
+                        f"Refusing to use download directory {existing}: it is group- or world-writable without the sticky bit"
+                    )
+                return
+        if not path.is_dir():
+            raise
+        return
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    fchmod = getattr(os, "fchmod", None)
+    fd = None
+    try:
+        if directory_flag is not None and nofollow_flag is not None and fchmod is not None:
+            fd = os.open(path, os.O_RDONLY | directory_flag | nofollow_flag)
+        resolved = _confine(path, root, "the download directory") if path.is_relative_to(root) else path.resolve()
+        if resolved != path or (fd is not None and not os.path.samestat(os.fstat(fd), path.lstat())):
+            raise ToolError("The download directory changed during creation")
+        if fd is None:
+            path.chmod(0o700)
+        else:
+            fchmod(fd, 0o700)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+@contextmanager
+def _private_file(path: Path):
+    with _private_umask():
+        stream = tempfile.NamedTemporaryFile(dir=path.parent, delete=False)
+    with stream:
+        staged = Path(stream.name)
+        try:
+            fchmod = getattr(os, "fchmod", None)
+            if fchmod is None:
+                staged.chmod(0o600)
+            else:
+                fchmod(stream.fileno(), 0o600)
+            yield stream
+            stream.close()
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
+def _extract_private_member(
+    unpack_dir: Path, root: Path, name: str, source: Callable[[], BinaryIO | None] | None,
+) -> None:
+    path = unpack_dir / name
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        return
+    _confine(path, unpack_dir, "the archive member")
+    if source is None:
+        _private_mkdir(path, root)
+    else:
+        _private_mkdir(path.parent, root)
+        _confine(path, unpack_dir, "the archive member")
+        member = source()
+        if member is None:
+            raise ToolError("Archive member has no file data")
+        with member, _private_file(path) as stream:
+            shutil.copyfileobj(member, stream)
+
+
+def _headless_cache_filename(url: str, filename: str) -> str:
+    prefix = sha256(url.encode()).hexdigest()[:24] + "-"
+    if len(filename.encode()) + len(prefix) <= _CACHE_FILENAME_MAX_BYTES:
+        return prefix + filename
+
+    extension = filename[-7:] if filename.lower().endswith(".tar.gz") else Path(filename).suffix
+    stem = filename.removesuffix(extension)
+    stem_budget = _CACHE_FILENAME_MAX_BYTES - len(prefix) - len(extension.encode())
+    if stem_budget < 0:
+        raise ToolError("Attachment filename extension is too long to cache")
+    stem = stem.encode()[:stem_budget].decode("utf-8", errors="ignore")
+    return prefix + stem + extension
 
 
 def _download_attachment_data(
@@ -141,6 +260,8 @@ def _download_attachment_data(
         root = attachment_root()
         if dest_dir:
             target_dir = Path(dest_dir).expanduser()
+        elif root is not None:
+            target_dir = root / str(ticket_id)
         else:
             target_dir = attachment_cache_dir(ticket_id)
     except AttachmentRootError as e:
@@ -155,20 +276,28 @@ def _download_attachment_data(
             raise ToolError(f"Cannot read the Zendesk config: {e}") from e
         if not _is_attachment_address(attachment_url, subdomain):
             raise ToolError(
-                f"Refusing to fetch attachment_url: with {ATTACHMENT_ROOT_ENV} set, only an "
-                "attachment's address on the configured Zendesk host is fetched (a path under "
+                "Refusing to fetch attachment_url: confined downloads only fetch an "
+                "attachment's address on the configured Zendesk host (a path under "
                 f"{' or '.join(_ATTACHMENT_PATH_PREFIXES)}, as zendesk_get_comments and "
                 "zendesk_list_attachments give it)"
             )
-    _confine(target_dir, root, "the download directory")
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        raise ToolError(f"Cannot create the download directory: {e}") from e
+    target_dir = _confine(target_dir, root, "the download directory")
+    private = root is not None and headless_read_only()
     # Strip path components from filename to prevent directory traversal
     safe_filename = Path(filename).name
+    if private:
+        safe_filename = _headless_cache_filename(attachment_url, safe_filename)
     dest = target_dir / safe_filename
-    # Checked again now the directory exists, and for the file itself: either may be a symlink.
+    _confine(dest, root, "the download")
+    try:
+        if private:
+            _private_mkdir(target_dir, root)
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+    except ToolError:
+        raise
+    except Exception as e:
+        raise ToolError(f"Cannot create the download directory: {e}") from e
     _confine(dest, root, "the download")
 
     try:
@@ -182,7 +311,11 @@ def _download_attachment_data(
     except Exception as e:
         raise ToolError(f"Download failed: {api_error_message(e)}") from e
     try:
-        dest.write_bytes(response.content)
+        if private:
+            with _private_file(dest) as stream:
+                stream.write(response.content)
+        else:
+            dest.write_bytes(response.content)
     except Exception as e:
         raise ToolError(f"Downloaded, but could not write {dest}: {e}") from e
 
@@ -239,14 +372,44 @@ def _archive_summary(dest: Path, unpack_dir: Path) -> str:
     })
 
 
+_ArchiveMember = TypeVar("_ArchiveMember", zipfile.ZipInfo, tarfile.TarInfo)
+
+
+def _bounded_archive_members(
+    members: Iterable[_ArchiveMember], size: Callable[[_ArchiveMember], int],
+) -> list[_ArchiveMember]:
+    checked = []
+    total = 0
+    for member in members:
+        if len(checked) == _HEADLESS_ARCHIVE_MAX_ENTRIES:
+            raise ToolError(f"Archive exceeds the {_HEADLESS_ARCHIVE_MAX_ENTRIES} entry limit")
+        member_size = size(member)
+        if member_size < 0:
+            raise ToolError("Archive member has an invalid negative size")
+        total += member_size
+        if total > _HEADLESS_ARCHIVE_MAX_BYTES:
+            raise ToolError(f"Archive exceeds the {_HEADLESS_ARCHIVE_MAX_BYTES} expanded-byte limit")
+        checked.append(member)
+    return checked
+
+
 def _handle_zip(dest: Path, root: Path | None = None) -> str:
     unpack_dir = dest.parent / dest.stem
-    _confine(unpack_dir, root, "the archive contents into")
+    private = root is not None and headless_read_only()
+    resolved = _confine(unpack_dir, root, "the archive contents into")
+    if private:
+        unpack_dir = resolved
     try:
         with zipfile.ZipFile(dest) as zf:
+            if private:
+                _bounded_archive_members(zf.infolist(), lambda member: member.file_size)
             safe_members = _safe_zip_members(zf, unpack_dir)
             for member in safe_members:
-                zf.extract(member, unpack_dir)
+                if private:
+                    source = None if member.is_dir() else lambda: zf.open(member)
+                    _extract_private_member(unpack_dir, root, member.filename, source)
+                else:
+                    zf.extract(member, unpack_dir)
         return _archive_summary(dest, unpack_dir)
     except Exception as e:
         # Not only BadZipFile: an encrypted member (RuntimeError), a compression method zipfile
@@ -256,11 +419,18 @@ def _handle_zip(dest: Path, root: Path | None = None) -> str:
 
 def _handle_tar(dest: Path, root: Path | None = None) -> str:
     unpack_dir = dest.parent / dest.stem.replace(".tar", "")
-    _confine(unpack_dir, root, "the archive contents into")
+    private = root is not None and headless_read_only()
+    resolved = _confine(unpack_dir, root, "the archive contents into")
+    if private:
+        unpack_dir = resolved
     try:
         with tarfile.open(dest) as tf:
+            members = (
+                _bounded_archive_members(tf, lambda member: member.size)
+                if private else tf.getmembers()
+            )
             safe_members = [
-                m for m in tf.getmembers()
+                m for m in members
                 if (unpack_dir / m.name).resolve().parts[:len(unpack_dir.resolve().parts)] == unpack_dir.resolve().parts
             ]
             extract_kwargs = {}
@@ -270,7 +440,12 @@ def _handle_tar(dest: Path, root: Path | None = None) -> str:
                 safe_members = [m for m in safe_members if m.isfile() or m.isdir()]
                 if hasattr(tarfile, "data_filter"):
                     extract_kwargs["filter"] = "data"
-            tf.extractall(unpack_dir, members=safe_members, **extract_kwargs)
+            if private:
+                for member in safe_members:
+                    source = None if member.isdir() else lambda: tf.extractfile(member)
+                    _extract_private_member(unpack_dir, root, member.name, source)
+            else:
+                tf.extractall(unpack_dir, members=safe_members, **extract_kwargs)
         return _archive_summary(dest, unpack_dir)
     except Exception as e:
         # Not only TarError: a truncated gzip stream (EOFError, zlib.error), a disk error.
@@ -396,14 +571,11 @@ def _handle_image(dest: Path, size_bytes: int) -> CallToolResult:
     )
 
 
-def register_attachment_tools(mcp, read_only: bool = False) -> None:
+def register_attachment_tools(mcp) -> None:
     @mcp.tool()
     def zendesk_list_attachments(ticket_id: int) -> str:
         """List all attachments across all comments for a Zendesk ticket. Returns filename, content type, size, and download URL for each. Files a customer sent through Zendesk Messaging (Messenger, in-app chat) are not comment attachments; they are listed from the transcript with "source": "messaging_transcript" and the uploader and time when the transcript names them."""
         return _list_attachments_data(ticket_id)
-
-    if read_only:
-        return
 
     @mcp.tool()
     def zendesk_download_attachment(
@@ -412,5 +584,5 @@ def register_attachment_tools(mcp, read_only: bool = False) -> None:
         ticket_id: int,
         dest_dir: str | None = None,
     ) -> Annotated[CallToolResult, str]:
-        """Download a Zendesk attachment or Messaging upload. Obtain attachment_url and filename from zendesk_list_attachments. ticket_id is required for cache organization. Optional dest_dir overrides the default cache location; the file is written there and (for archives) extracted alongside it. Archives return a file list and unpack_dir — read individual files with your normal file tools. PDFs return up to ~500KB of extracted text. Images return the picture itself (a downscaled copy, long edge at most 1568 px) and its metadata; the original is saved at cached_path."""
+        """Download a Zendesk attachment or Messaging upload without changing Zendesk. Obtain attachment_url and filename from zendesk_list_attachments or zendesk_get_comments. ticket_id is required for cache organization. Headless OAuth accepts only attachment URLs on the configured Zendesk account and writes only inside the attachment cache root. Optional dest_dir overrides the default cache location within any configured root. Archives return a file list and unpack_dir. In headless mode, archives over 100 MiB expanded or 1,000 entries are saved but not unpacked; the tool returns an error with the cached archive's path instead. PDFs return up to ~500KB of extracted text. Images return the picture itself (a downscaled copy, long edge at most 1568 px) and its metadata; the original is saved at cached_path."""
         return _download_attachment_data(attachment_url, filename, ticket_id, dest_dir)
